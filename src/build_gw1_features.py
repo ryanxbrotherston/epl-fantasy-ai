@@ -18,18 +18,11 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from feature_config import ROLLING_WINDOW, CORE_STATS, OPTIONAL_STATS, POSITION_ID_MAP
+
 BASE = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE / "fpl-historical" / "data"
 MODEL_DIR = BASE / "models"
-
-ROLLING_WINDOW = 5
-CORE_STATS = [
-    "minutes", "total_points", "ict_index", "threat", "creativity", "influence",
-    "bps", "expected_goal_involvements", "expected_goals_conceded", "starts",
-    "goals_scored", "assists", "clean_sheets", "goals_conceded", "bonus",
-]
-OPTIONAL_STATS = ["defensive_contribution", "tackles", "clearances_blocks_interceptions", "recoveries"]
-POSITION_ID_MAP = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 
 
 def normalize_name(s: str) -> str:
