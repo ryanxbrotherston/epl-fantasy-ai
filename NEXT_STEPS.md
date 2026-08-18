@@ -1,10 +1,8 @@
 # Next steps for Claude Code
 
 This is a working repo, not a blank slate — read the code before planning
-anything, especially `squad_optimizer.py` (the ILP formulation), `match_model.py`
-(the Poisson goal model), and `fpl_api.py` (the live data contract everything
-else depends on). The README's "Known issues" and "Not started yet" sections
-are accurate as of this handoff.
+anything, especially `squad_optimizer.py`, `match_model.py`, and
+`multi_week_planner.py`. The README's "Known issues" section is accurate.
 
 ## Immediate blocker
 
@@ -16,88 +14,81 @@ account exists; confirm it does first.
 
 ## What's built and backtested (as of this handoff)
 
-- **Points model**: RandomForest, 6-season window (2019-20 to 2024-25),
-  recency-weighted, tested against 2025-26 held out. MAE 0.991 vs 1.042 naive
-  baseline. Extending to the full 9-season history was tried and tested (with
-  and without recency weighting) - it didn't measurably help, see README.
-- **Squad optimizer**: PuLP ILP, budget/position/club-limit constraints, picks
-  full XI + captain + bench. Known limitation: optimizes average points, not
-  ceiling - see README.
-- **Match model**: Poisson goal model (attack/defence strength per team via
-  `sklearn.linear_model.PoissonRegressor`, home advantage term, recency
-  weighting). Backtested on 2025-26: 45.5% match-winner accuracy (vs 42.6%
-  "always pick home team" baseline), Brier score 0.208 vs 0.218 naive. Modest
-  but real edge - football is genuinely hard to predict, this isn't a
-  breakthrough, it's a credible first pass. Derives match winner/draw/loss,
-  exact-score grid, and clean-sheet probabilities from the same fitted lambdas.
-  **Known simplification**: assumes home/away goals are independent Poisson
-  processes - the real Dixon-Coles model adds a low-score correlation
-  correction (0-0, 1-0, 0-1, 1-1) that this doesn't implement.
-- **Player props**: anytime goalscorer/assist probabilities, built on top of
-  the match model's fixture-difficulty lambda + each player's own rolling
-  expected-goals/assists rate. Sanity-checked against real fixtures (Man City
-  vs a weak side correctly skews heavily favorite; a fixture-adjusted premium
-  striker's scoring probability comes out in a believable range) but not yet
-  backtested with real calibration metrics the way the match model was -
-  worth doing before trusting it for real decisions.
+Everything below has real, honest metrics behind it — not vibes. See README
+and each script's docstring for the numbers and what they mean.
+
+- **Points model** (`train_points_model.py`): RandomForest, 6-season window,
+  recency-weighted. MAE 0.991 vs 1.042 naive baseline.
+- **Squad optimizer** (`squad_optimizer.py`): single-week ILP. Known
+  limitation: optimizes average points, not ceiling (undervalues premiums).
+- **Match model** (`match_model.py`): Poisson goal model. 45.5% winner
+  accuracy vs 42.6% naive, Brier 0.208 vs 0.218. Modest real edge.
+- **Player props** (`player_props.py`): anytime scorer/assist probabilities.
+  Was initially WORSE than naive (overconfident from a flat 75-min assumption
+  and no shrinkage on noisy small-sample rates) - fixed, now beats baseline
+  on both scorer (0.0274 vs 0.0300 Brier) and assist (0.0280 vs 0.0290).
+- **Fixture ticker** (`fixture_ticker.py`): built directly on match_model's
+  lambdas, not a separate heuristic. Sanity-checked, not separately
+  backtested (low marginal need given it's a direct derivative).
+- **Price predictor** (`price_predictor.py`): weekly resolution only - see
+  its docstring for why (FPL's real algorithm is daily, undocumented; our
+  historical data is weekly snapshots). AUC 0.87 (rise) / 0.76 (fall),
+  6.7x / 4.2x lift in the top-decile watch list vs base rate.
+- **Live rolling features** (`live_rolling_features.py`): pulls this
+  season's actual gameweek-by-gameweek player history via
+  `element-summary/{id}/`, replacing the frozen pre-season proxy. Validated
+  against schema-accurate mock data only (live API unreachable from the
+  sandbox that built this) - caught and fixed a real bug this way: FPL's
+  live API returns some stats (ict_index, threat, creativity, influence) as
+  quoted strings, not numbers. Confirm against a real gameweek once GW1+
+  exists.
+- **Multi-week transfer + chip planner** (`multi_week_planner.py` +
+  `multi_week_projections.py`): real multi-period MILP, not a bigger
+  single-week ILP - per-gameweek squad evolution via explicit transfer
+  variables, free-transfer banking (capped at 5), chip eligibility windows
+  pulled from bootstrap-static (not hardcoded), hit costs. Tested against
+  REAL double/blank gameweeks in the 2022-23 season (World Cup fixture
+  congestion) - correctly spikes projected points and transfer activity
+  around confirmed DGWs, sensible wildcard/free-hit/triple-captain timing.
+  Two real bugs found and fixed during testing: a nonlinear objective term
+  (PuLP can't multiply two decision variables - needed proper AND-
+  linearization for the triple-captain interaction) and self-cancelling
+  buy/sell pairs the solver would pick when the transfer budget had slack
+  (net-zero effect, but a confusing plan to hand someone).
+  **Known simplification**: the per-week budget constraint doesn't yet
+  distinguish buy price from sell price (FPL takes a cut on profit when you
+  sell a risen player) - fine for a first pass, worth tightening.
 
 ## Priority order for what's next
 
-1. **Sanity-check the live layer for real.** Everything in `fpl_api.py` and
-   `ai_team_monitor.py` was built and unit-tested against mocked/schema-accurate
-   data (the sandbox that built this couldn't reach fantasy.premierleague.com).
-   First real run should confirm: bootstrap-static shape matches what the code
-   expects, entry/picks lookups work against a real Team ID, and the email
-   actually sends via Gmail SMTP.
-2. **The weekly predict → observe → recalibrate loop.** This is the core of
-   what makes match_model.py and player_props.py actually useful in-season,
-   not just a one-off backtest. Needs:
-   - A script that runs before each gameweek's deadline: generates match/prop
-     predictions for that week's fixtures, stores them (git-committed JSON/CSV
-     is fine for now, same pattern as `data/alert_log.json` - a real DB isn't
-     necessary yet at this data volume).
-   - A script that runs after results are in: pulls actual results/scorers via
-     the live FPL API, compares against what was stored, logs accuracy/Brier
-     score for that week specifically (not just the one-time historical
-     backtest - an ongoing, visible track record).
-   - Periodic retraining of `match_model.py` incorporating this season's own
-     now-completed matches, not just the pre-season historical window.
-   - **This is the part that's genuinely blocked on something real**: player
-     props need in-season rolling player form to actually update through the
-     season, and that live rolling-feature engine doesn't exist yet (item 3
-     below). Match-level retraining doesn't have this dependency and can be
-     built now.
-3. **Live in-season rolling player features.** Currently frozen at last
-   season's closing form (`build_gw1_features.py`'s whole premise). The
-   `element-summary/{player_id}/` endpoint's `history` field (this season's
-   gameweek-by-gameweek data so far) is the fix - confirmed via documentation,
-   not yet implemented. Unlocks: in-season transfer advice, live player props,
-   and removes the "frozen at pre-season form" caveat on everything else.
-4. **Fixture difficulty ticker.** Team strength data is already sitting in
-   bootstrap-static; `match_model.py`'s fitted lambdas are arguably a *better*
-   difficulty signal now than the raw strength ratings would be - worth using
-   the match model's own output here instead of building something separate.
-5. **Price change predictor.** Net transfers in/out per player is already in
-   the data; standard approach is a momentum threshold, well documented in
-   the FPL community, not novel.
-6. **Risk/differential analyzer.** Ownership % is already in the data too —
-   this is mostly a UI/framing exercise on data we already have.
-7. **Multi-week transfer + chip planner.** The real lift. Needs a proper
-   multi-period MILP (not a bigger version of the single-week ILP we have —
-   genuinely different: decision variables per gameweek across a rolling
-   5-6 week horizon, transfer-cost and banked-free-transfer accounting, chip
-   usage-window constraints). Worth studying sertalpbilal's
-   FPL-Optimization-Tools (open source, well-regarded in the FPL analytics
-   community) as a reference formulation rather than deriving from scratch.
-   Re-solve the full horizon on every run; only commit to the current
-   gameweek's decision — everything further out should stay revisable as
-   double/blank gameweeks get confirmed through the season.
-8. **Deployment.** Push this repo to GitHub for real, connect it to Streamlit
-   Community Cloud, set the `AI_TEAM_ID`/email secrets in both GitHub Actions
-   and Streamlit Cloud's secrets manager (separate systems, both need it).
-9. **Persistence for the Friends tab.** Currently session-only. Needed for
-   any cross-visit leaderboard or history — Supabase is a reasonable default,
-   not committed to.
+1. **Sanity-check the live layer for real.** `fpl_api.py`, `ai_team_monitor.py`,
+   and `live_rolling_features.py` are all built and unit-tested against
+   mocked/schema-accurate data only. First real run should confirm:
+   bootstrap-static shape, entry/picks lookups, element-summary history,
+   and the email alert actually sending.
+2. **Wire the multi-week planner into live data.** Currently tested against
+   historical seasons only (2022-23's real double/blank gameweeks). Needs:
+   `fpl_api`'s live entry (current squad, bank, free transfers),
+   bootstrap-static's real chip list and which chips are already used, and
+   `multi_week_projections.py` fed from `live_rolling_features.py` instead
+   of the frozen pre-season proxy once step 1 is confirmed working.
+3. **The weekly predict → observe → recalibrate loop.** A script that runs
+   before each deadline (generate + store predictions from match_model.py,
+   player_props.py, and the planner), and one that runs after (pull actual
+   results via the live API, log accuracy for that week specifically - an
+   ongoing visible track record, not just the one-time historical backtest).
+   Periodic retraining of match_model.py incorporating this season's own
+   now-finished matches. Git-committed JSON/CSV logging is fine for now,
+   same pattern as `data/alert_log.json`.
+4. **Risk/differential analyzer.** Ownership % is already in the data -
+   mostly a UI/framing exercise on data already available, lowest-effort
+   item left on the list.
+5. **Deployment.** Push this repo to GitHub (should already be done by the
+   time this is read), connect Streamlit Community Cloud, set the
+   `AI_TEAM_ID`/email secrets in both GitHub Actions and Streamlit Cloud's
+   secrets manager (separate systems, both need it).
+6. **Persistence for the Friends tab.** Currently session-only. Supabase is
+   a reasonable default, not committed to.
 
 ## Known limitations, not yet solved
 
