@@ -1,0 +1,52 @@
+{
+  "features": [
+    "roll_minutes",
+    "roll_total_points",
+    "roll_ict_index",
+    "roll_threat",
+    "roll_creativity",
+    "roll_influence",
+    "roll_bps",
+    "roll_expected_goal_involvements",
+    "roll_expected_goals_conceded",
+    "roll_starts",
+    "roll_goals_scored",
+    "roll_assists",
+    "roll_clean_sheets",
+    "roll_goals_conceded",
+    "roll_bonus",
+    "roll_defensive_contribution",
+    "roll_tackles",
+    "roll_clearances_blocks_interceptions",
+    "roll_recoveries",
+    "games_played_so_far",
+    "pos_GK",
+    "pos_DEF",
+    "pos_MID",
+    "pos_FWD"
+  ],
+  "rolling_window": 5,
+  "core_stats": [
+    "minutes",
+    "total_points",
+    "ict_index",
+    "threat",
+    "creativity",
+    "influence",
+    "bps",
+    "expected_goal_involvements",
+    "expected_goals_conceded",
+    "starts",
+    "goals_scored",
+    "assists",
+    "clean_sheets",
+    "goals_conceded",
+    "bonus"
+  ],
+  "optional_stats": [
+    "defensive_contribution",
+    "tackles",
+    "clearances_blocks_interceptions",
+    "recoveries"
+  ]
+}

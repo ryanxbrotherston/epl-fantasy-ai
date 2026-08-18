@@ -1,0 +1,40 @@
+name: AI Team Monitor
+
+# Runs independently of the Streamlit site (Streamlit Cloud can't run
+# background jobs on its own - this is what makes the "continuous checking"
+# part actually work). Adjust the schedule below as GW deadlines approach;
+# every hour is a reasonable default, tighten to every 15-30 min in the
+# final day before a deadline if you want faster alerts.
+on:
+  schedule:
+    - cron: "0 * * * *"   # every hour, on the hour (UTC)
+  workflow_dispatch: {}     # lets you trigger a manual run from the Actions tab
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run monitor
+        env:
+          AI_TEAM_ID: ${{ secrets.AI_TEAM_ID }}
+          ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
+          ALERT_EMAIL_APP_PASSWORD: ${{ secrets.ALERT_EMAIL_APP_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+        run: python src/ai_team_monitor.py
+
+      - name: Commit updated alert log (if changed)
+        run: |
+          git config user.name "ai-team-monitor"
+          git config user.email "actions@github.com"
+          git add data/alert_log.json
+          git diff --staged --quiet || git commit -m "Update alert log [skip ci]"
+          git push || true
