@@ -11,10 +11,16 @@ fall out as regression coefficients rather than needing separate models.
 
 Everything else — match winner, exact scorelines, clean sheets — is derived
 mathematically from the two fitted expected-goals numbers (lambda_home,
-lambda_away) for a fixture, assuming goals are Poisson-distributed and
-(as a known simplification - see backtest notes) independent between teams.
-The real Dixon-Coles model adds a small correlation correction for low
-scores (0-0, 1-0, 0-1, 1-1) that this doesn't implement yet.
+lambda_away) for a fixture, assuming goals are Poisson-distributed. The full
+Dixon-Coles correction adds a small correlation term (rho) that nudges the
+four low-score cells (0-0, 1-0, 0-1, 1-1) away from what independent Poisson
+alone predicts - real football has slightly more 0-0/1-1 draws and slightly
+fewer 1-0/0-1 results than pure independence implies, because a team already
+chasing/protecting a scrappy low score changes its own attacking intent in a
+way a fixed lambda can't capture. rho is fit by MLE on the training seasons
+(fit_dixon_coles_rho, holding lambda_home/lambda_away fixed from the already-
+fitted Poisson regression) and applied in fixture_probabilities. See
+backtest_match_model.py for the with/without comparison on held-out data.
 """
 
 from pathlib import Path
@@ -88,12 +94,63 @@ def predict_lambda(model, encoder, team: str, opponent: str, is_home: int) -> fl
     return float(model.predict(X)[0])
 
 
-def fixture_probabilities(lambda_home: float, lambda_away: float) -> dict:
-    """Everything derived from the two Poisson rates for one fixture."""
+def dixon_coles_tau(x: int, y: int, lambda_home: float, lambda_away: float, rho: float) -> float:
+    """The Dixon-Coles (1997) low-score correction factor - only the four
+    cells where either team scored 0 or 1 get adjusted; every other
+    scoreline keeps its plain independent-Poisson probability (tau=1)."""
+    if x == 0 and y == 0:
+        return 1 - lambda_home * lambda_away * rho
+    if x == 0 and y == 1:
+        return 1 + lambda_home * rho
+    if x == 1 and y == 0:
+        return 1 + lambda_away * rho
+    if x == 1 and y == 1:
+        return 1 - rho
+    return 1.0
+
+
+def fit_dixon_coles_rho(fixtures: pd.DataFrame, model, encoder, bounds=(-0.3, 0.3)) -> float:
+    """MLE fit of rho, holding lambda_home/lambda_away fixed from the
+    already-fitted Poisson regression - rho only touches 4 score cells, so
+    it's a well-behaved 1-D search rather than something that needs
+    refitting jointly with the attack/defence strengths."""
+    from scipy.optimize import minimize_scalar
+
+    observed = []
+    for _, fx in fixtures.iterrows():
+        lh = predict_lambda(model, encoder, fx["home_name"], fx["away_name"], 1)
+        la = predict_lambda(model, encoder, fx["away_name"], fx["home_name"], 0)
+        if np.isnan(lh) or np.isnan(la):
+            continue
+        observed.append((lh, la, int(fx["team_h_score"]), int(fx["team_a_score"])))
+
+    def neg_log_lik(rho):
+        total = 0.0
+        for lh, la, hs, as_ in observed:
+            tau = dixon_coles_tau(hs, as_, lh, la, rho)
+            p = tau * poisson.pmf(hs, lh) * poisson.pmf(as_, la)
+            if tau <= 0 or p <= 0:
+                return 1e10  # outside the region where tau keeps probabilities valid
+            total += np.log(p)
+        return -total
+
+    result = minimize_scalar(neg_log_lik, bounds=bounds, method="bounded")
+    return float(result.x)
+
+
+def fixture_probabilities(lambda_home: float, lambda_away: float, rho: float = 0.0) -> dict:
+    """Everything derived from the two Poisson rates for one fixture, with
+    an optional Dixon-Coles low-score correction (rho=0.0 reproduces plain
+    independent Poisson)."""
     goals = np.arange(0, MAX_GOALS_GRID + 1)
     p_home_goals = poisson.pmf(goals, lambda_home)
     p_away_goals = poisson.pmf(goals, lambda_away)
     score_grid = np.outer(p_home_goals, p_away_goals)  # [i, j] = P(home scores i, away scores j)
+
+    if rho != 0.0:
+        for x, y in [(0, 0), (0, 1), (1, 0), (1, 1)]:
+            score_grid[x, y] *= dixon_coles_tau(x, y, lambda_home, lambda_away, rho)
+        score_grid /= score_grid.sum()  # renormalize - tau perturbs 4 cells, grid should still sum to ~1
 
     p_home_win = np.tril(score_grid, k=-1).sum()
     p_draw = np.trace(score_grid)
@@ -115,11 +172,13 @@ def train_and_save():
     train_fixtures = pd.concat([load_fixtures(s) for s in TRAIN_SEASONS], ignore_index=True)
     long_df = to_long_format(train_fixtures)
     model, encoder = fit_model(long_df)
+    rho = fit_dixon_coles_rho(train_fixtures, model, encoder)
 
     import joblib
-    joblib.dump({"model": model, "encoder": encoder}, MODEL_DIR / "match_model.pkl")
-    print(f"Trained on {len(train_fixtures)} matches across {TRAIN_SEASONS}. Saved to models/match_model.pkl")
-    return model, encoder
+    joblib.dump({"model": model, "encoder": encoder, "rho": rho}, MODEL_DIR / "match_model.pkl")
+    print(f"Trained on {len(train_fixtures)} matches across {TRAIN_SEASONS}. "
+          f"Dixon-Coles rho={rho:.4f}. Saved to models/match_model.pkl")
+    return model, encoder, rho
 
 
 if __name__ == "__main__":

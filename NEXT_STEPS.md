@@ -26,7 +26,10 @@ and each script's docstring for the numbers and what they mean.
   fix" below for the full story, including the variance approach that was
   tried first and backtested WORSE.
 - **Match model** (`match_model.py`): Poisson goal model. 45.5% winner
-  accuracy vs 42.6% naive, Brier 0.208 vs 0.218. Modest real edge.
+  accuracy vs 42.6% naive, Brier 0.208 vs 0.218. Modest real edge. Now has an
+  optional Dixon-Coles low-score correlation correction (`fixture_probabilities(...,
+  rho=...)`, rho fit by MLE in `fit_dixon_coles_rho`) - see "Dixon-Coles" below
+  for why the backtested effect is real but tiny for this data.
 - **Player props** (`player_props.py`): anytime scorer/assist probabilities.
   Was initially WORSE than naive (overconfident from a flat 75-min assumption
   and no shrinkage on noisy small-sample rates) - fixed, now beats baseline
@@ -140,6 +143,32 @@ affected player) is present in the shipped points model and its backtested
 MAE. Likely small in aggregate (rare rows) but not verified - worth checking
 before trusting those exact numbers to the decimal.
 
+## Dixon-Coles correction (2026-08-19 overnight session)
+
+Implemented per the standard Dixon-Coles (1997) approach: a correction
+factor tau(x,y) applied to the four low-score cells (0-0, 1-0, 0-1, 1-1) of
+the independent-Poisson score grid, controlled by a single correlation
+parameter rho, fit by MLE holding lambda_home/lambda_away fixed from the
+already-fitted Poisson regression (`fit_dixon_coles_rho` in `match_model.py`).
+rho is now saved in `models/match_model.pkl` alongside the model/encoder.
+`fixture_probabilities(lambda_home, lambda_away, rho=...)` defaults to
+rho=0.0 (old behavior) so nothing downstream broke by adding the parameter.
+
+**Backtest result** (`backtest_match_model.py`, now runs both variants
+side by side): fitted rho on the 6 training seasons = **-0.01** - real, but
+an order of magnitude smaller than the original Dixon-Coles paper's typical
+range (-0.1 to -0.2). On the held-out 2025-26 season this makes almost no
+practical difference: match-winner Brier 0.2078 → 0.2077, draw Brier
+0.1997 → 0.1996, clean-sheet and goals-MAE identical to 3 decimal places.
+Implemented correctly and available (`rho` is in the saved model bundle for
+any future caller that wants it), but the "documented simplification" this
+was meant to fix turns out not to be costing much in practice for this
+dataset/model - modern Premier League scoring, pooled across 6 recency-
+weighted seasons, just doesn't show the low-score correlation the original
+1990s data did. Nothing currently calls `fixture_probabilities()` outside
+the backtest (it's not wired into the live app yet), so this was a
+contained, low-risk change.
+
 ## Priority order for what's next
 
 1. **Sanity-check the live layer for real.** `fpl_api.py`, `ai_team_monitor.py`,
@@ -172,15 +201,8 @@ before trusting those exact numbers to the decimal.
 
 ## Known limitations, not yet solved
 
-- The match model treats home/away goals as independent (no Dixon-Coles
-  low-score correlation correction) and refits from a fixed pre-season
-  historical window rather than adapting through the season yet (see priority
-  2 above).
-- **Risk/differential analyzer's picks skew toward noisy low-minutes
-  players** - predicted points for barely-used players are small-sample
-  noise (same issue player_props.py had before its shrinkage fix), so
-  ranking among them isn't very meaningful yet. Needs a minimum-minutes
-  floor before a player enters the differential ranking at all.
+- The match model refits from a fixed pre-season historical window rather
+  than adapting through the season yet (see priority 2 above).
 - Backtesting risk_analyzer.py caught something worth remembering for any
   future feature that touches ownership: **low ownership is NOT free
   upside** - backtested against real 2025-26 data, low-ownership players
