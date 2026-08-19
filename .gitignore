@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 fpl-historical/
 .streamlit/secrets.toml
+venv/

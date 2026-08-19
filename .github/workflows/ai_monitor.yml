@@ -35,6 +35,10 @@ jobs:
         run: |
           git config user.name "ai-team-monitor"
           git config user.email "actions@github.com"
-          git add data/alert_log.json
-          git diff --staged --quiet || git commit -m "Update alert log [skip ci]"
-          git push || true
+          if [ -f data/alert_log.json ]; then
+            git add data/alert_log.json
+            git diff --staged --quiet || git commit -m "Update alert log [skip ci]"
+            git push || true
+          else
+            echo "No alert log file yet (nothing flagged this run) - nothing to commit."
+          fi
