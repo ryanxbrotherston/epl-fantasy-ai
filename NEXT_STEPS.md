@@ -80,9 +80,8 @@ and each script's docstring for the numbers and what they mean.
    Periodic retraining of match_model.py incorporating this season's own
    now-finished matches. Git-committed JSON/CSV logging is fine for now,
    same pattern as `data/alert_log.json`.
-4. **Risk/differential analyzer.** Ownership % is already in the data -
-   mostly a UI/framing exercise on data already available, lowest-effort
-   item left on the list.
+4. **Risk/differential analyzer.** DONE, but see caveat below - not
+   spotless. Ready for review, not "ship blind."
 5. **Deployment.** Push this repo to GitHub (should already be done by the
    time this is read), connect Streamlit Community Cloud, set the
    `AI_TEAM_ID`/email secrets in both GitHub Actions and Streamlit Cloud's
@@ -95,8 +94,21 @@ and each script's docstring for the numbers and what they mean.
 - The squad optimizer maximizes *average* predicted points, which structurally
   undervalues explosive/premium players (their ceiling matters more than their
   average, especially for captaincy) — see README for the concrete example.
-  This needs a variance-aware objective, not a quick patch.
+  This needs a variance-aware objective, not a quick patch. **Still not
+  fixed** - flagged repeatedly across sessions, top priority for whoever
+  picks this up next.
 - The match model treats home/away goals as independent (no Dixon-Coles
   low-score correlation correction) and refits from a fixed pre-season
   historical window rather than adapting through the season yet (see priority
   2 above).
+- **Risk/differential analyzer's picks skew toward noisy low-minutes
+  players** - predicted points for barely-used players are small-sample
+  noise (same issue player_props.py had before its shrinkage fix), so
+  ranking among them isn't very meaningful yet. Needs a minimum-minutes
+  floor before a player enters the differential ranking at all.
+- Backtesting risk_analyzer.py caught something worth remembering for any
+  future feature that touches ownership: **low ownership is NOT free
+  upside** - backtested against real 2025-26 data, low-ownership players
+  score ~1 point/gameweek WORSE than high-ownership players at the same
+  price. The crowd's ownership numbers are a genuinely informative signal,
+  not noise to bet against by default.
