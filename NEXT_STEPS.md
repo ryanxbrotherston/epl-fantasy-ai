@@ -143,6 +143,26 @@ affected player) is present in the shipped points model and its backtested
 MAE. Likely small in aggregate (rare rows) but not verified - worth checking
 before trusting those exact numbers to the decimal.
 
+## Risk analyzer minutes floor (2026-08-19 overnight session)
+
+Priority 2 tonight: `risk_analyzer.analyze()` now drops any player below
+`MIN_ROLL_MINUTES` (60 - FPL's own threshold for the full 2-point appearance
+bonus, not an arbitrary number) before ranking anyone, instead of ranking
+the full pool including fringe players whose `predicted_points` is mostly
+small-sample noise.
+
+**Backtest** (`backtest_risk_analyzer_minutes_floor.py`): for each 2025-26
+gameweek, ran `analyze(..., target_rank_direction="chasing")` with and
+without the floor and compared the actual points earned by
+`top_picks_by_position()`'s recommendations that week. No floor: 1.60 actual
+pts/pick average. floor=60: 3.42 pts/pick, improved in 31/32 gameweeks - a
+much cleaner result than the squad-optimizer fix above, since filtering
+obvious small-sample noise is a much less subtle problem than a calibration
+bias. Stricter floors (90 min) score even higher on this narrow metric, but
+that starts filtering out genuine rotation-player differentials rather than
+just noise, so 60 was kept as the principled cutoff rather than the metric-
+maximizing one.
+
 ## Dixon-Coles correction (2026-08-19 overnight session)
 
 Implemented per the standard Dixon-Coles (1997) approach: a correction
@@ -190,8 +210,9 @@ contained, low-risk change.
    Periodic retraining of match_model.py incorporating this season's own
    now-finished matches. Git-committed JSON/CSV logging is fine for now,
    same pattern as `data/alert_log.json`.
-4. **Risk/differential analyzer.** DONE, but see caveat below - not
-   spotless. Ready for review, not "ship blind."
+4. **Risk/differential analyzer.** DONE, including the minimum-minutes floor
+   (see "Risk analyzer minutes floor" below). Ready for review, not
+   "ship blind."
 5. **Deployment.** Push this repo to GitHub (should already be done by the
    time this is read), connect Streamlit Community Cloud, set the
    `AI_TEAM_ID`/email secrets in both GitHub Actions and Streamlit Cloud's
