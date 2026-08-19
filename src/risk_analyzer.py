@@ -34,6 +34,18 @@ OWNERSHIP_TIERS = [
     (25, 200, "Template"),
 ]
 
+# Minimum rolling average minutes/gameweek (over the trailing window - see
+# feature_config.ROLLING_WINDOW) for a player to enter the ranking at all.
+# 60 isn't arbitrary - it's FPL's own threshold for the full 2-point
+# appearance bonus (1-59 mins only earns 1), i.e. "a real, established part
+# of their team's matchday plan" rather than a fringe/rotation player whose
+# predicted_points is mostly small-sample noise. See
+# backtest_risk_analyzer_minutes_floor.py for why this was added: without
+# it, differential picks skewed toward barely-used players whose predicted
+# points aren't meaningful (same failure mode player_props.py had before its
+# own shrinkage fix).
+MIN_ROLL_MINUTES = 60
+
 
 def ownership_tier(pct: float) -> str:
     for low, high, label in OWNERSHIP_TIERS:
@@ -42,13 +54,19 @@ def ownership_tier(pct: float) -> str:
     return "Template"
 
 
-def analyze(players: pd.DataFrame, target_rank_direction: str = "chasing") -> pd.DataFrame:
+def analyze(players: pd.DataFrame, target_rank_direction: str = "chasing",
+            min_roll_minutes: float = MIN_ROLL_MINUTES) -> pd.DataFrame:
     """players needs: id, web_name, position, now_cost, predicted_points,
-    selected_by_percent (already present in gw1_seed_features.csv / live
-    bootstrap-static data).
+    selected_by_percent, roll_minutes (all already present in
+    gw1_seed_features.csv / live bootstrap-static data).
 
     target_rank_direction: 'chasing' (behind target, want variance/upside)
     or 'protecting' (ahead of target, want to minimize variance).
+
+    min_roll_minutes: players below this rolling average minutes/gameweek
+    are dropped before ranking (see MIN_ROLL_MINUTES above) - their
+    predicted_points are small-sample noise, not a meaningful signal to
+    differentiate on.
 
     IMPORTANT (see backtest_risk_analyzer.py): low ownership is NOT a free
     bonus. Backtested against real 2025-26 data, low-ownership players score
@@ -59,7 +77,7 @@ def analyze(players: pd.DataFrame, target_rank_direction: str = "chasing") -> pd
     rank within their price band - a real mismatch between (validated) model
     quality and market attention, not just "nobody's heard of them."
     """
-    df = players.copy()
+    df = players[pd.to_numeric(players["roll_minutes"], errors="coerce").fillna(0) >= min_roll_minutes].copy()
     ownership = pd.to_numeric(df["selected_by_percent"], errors="coerce").fillna(0)
     df["ownership_pct"] = ownership
     df["tier"] = ownership.apply(ownership_tier)
