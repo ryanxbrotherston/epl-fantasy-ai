@@ -51,7 +51,7 @@ def refresh_predictions_with_live_data(base_preds: pd.DataFrame, bootstrap: dict
         errors="ignore",
     ).merge(live_cols, on="id", how="left")
 
-    from squad_optimizer import BLEND_WEIGHTS, UNAVAILABLE_STATUSES
+    from squad_optimizer import BLEND_WEIGHTS, UNAVAILABLE_STATUSES, apply_price_bias_correction
     ep_next = pd.to_numeric(merged["ep_next"], errors="coerce").fillna(merged["model_points"])
     ppg = pd.to_numeric(merged["points_per_game"], errors="coerce").fillna(merged["model_points"])
     merged["predicted_points"] = (
@@ -63,6 +63,7 @@ def refresh_predictions_with_live_data(base_preds: pd.DataFrame, bootstrap: dict
     doubtful = merged["status"].eq("d") & chance.notna()
     merged.loc[doubtful, "predicted_points"] *= (chance[doubtful] / 100)
     merged["available"] = ~merged["status"].isin(UNAVAILABLE_STATUSES)
+    merged = apply_price_bias_correction(merged)
     return merged
 
 

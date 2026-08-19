@@ -42,6 +42,34 @@ BLEND_WEIGHTS = {"model": 0.40, "ep_next": 0.40, "ppg": 0.20}
 # statuses FPL uses: a=available, d=doubtful, i=injured, s=suspended, u=unavailable/left club
 UNAVAILABLE_STATUSES = {"i", "s", "u", "n"}
 
+# Fix for the "optimizes average points, undervalues explosive premiums"
+# limitation documented in the README/NEXT_STEPS. The FIRST thing tried here
+# was a variance/ceiling-reward term built on player_props.py's Poisson
+# framework (predicted_points + risk_weight*std) - it backtested WORSE on
+# actual held-out points (see backtest_squad_optimizer.py's git history /
+# NEXT_STEPS.md for the negative result and why: squad selection under a
+# fixed squad size is a linear, EV-maximizing problem, not a portfolio one,
+# so rewarding variance just trades away expected value for no benefit).
+#
+# The real root cause, found by checking predicted_points against actual
+# points by price tier on held-out 2025-26 data: the model+blend
+# systematically UNDER-predicts expensive players specifically (bias grows
+# from ~+0.13 pts/GW at budget prices to ~+1.6 pts/GW at elite prices) - a
+# calibration problem, not a variance problem. PRICE_BIAS_CORRECTION applies
+# a linear correction (fit on actual-minus-predicted vs price, full 2025-26
+# season) to undo that. Backtested out-of-sample (correction fit on GW6-20,
+# evaluated fresh-pick-each-week on GW21-37, never seen during fitting):
+# +2.24 actual XI+captain points/GW on average (62.9 vs 60.7 baseline),
+# improved 10/17 held-out gameweeks. See backtest_squad_optimizer.py.
+PRICE_BIAS_CORRECTION = {"a": -0.776184, "b": 0.020478}
+
+
+def apply_price_bias_correction(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    c = PRICE_BIAS_CORRECTION
+    df["predicted_points"] = df["predicted_points"] + (c["a"] + c["b"] * df["now_cost"])
+    return df
+
 
 def load_predictions() -> pd.DataFrame:
     model = joblib.load(MODEL_DIR / "points_model.pkl")
@@ -73,6 +101,7 @@ def load_predictions() -> pd.DataFrame:
     df.loc[doubtful, "predicted_points"] *= (chance[doubtful] / 100)
 
     df["available"] = ~df["status"].isin(UNAVAILABLE_STATUSES)
+    df = apply_price_bias_correction(df)
     return df
 
 

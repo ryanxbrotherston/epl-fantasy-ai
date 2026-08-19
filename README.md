@@ -18,14 +18,22 @@ here, a squad/transfer optimizer). Built for the 2026/27 FPL season.
   unavailable/injured players. Full £100.0m budget now gets used (was leaving
   ~£8m on the table before).
 
-### Known limitation: no explosive-premium bias
+### Premium players: fixed, but not the way it looked at first
 
-The optimizer maximizes *average* predicted points. Real FPL strategy cares
-about *ceiling* too — a £15.5m striker who can single-handedly return 15+ points
-in a big week is worth more than his average suggests, especially for
-captaincy. This isn't fixed yet; it's a genuine variance-aware optimization
-problem, not a quick patch. Worth knowing before trusting the AI Team's picks
-blindly.
+The optimizer maximizes predicted points, and premiums were getting
+underweighted — but backtesting the obvious fix (reward variance/ceiling, see
+NEXT_STEPS.md for the full negative result) showed that's not actually the
+problem: picking a fixed-size squad under a linear points payoff is an
+expected-value problem, not a portfolio one, so rewarding variance just
+traded away real points for nothing. The real issue, found by checking
+predicted points against actual points by price tier on held-out data: the
+model+blend systematically **under-predicts expensive players specifically**
+(bias ~+0.13 pts/GW at budget prices, growing to ~+1.5 pts/GW at elite
+prices) — a calibration problem. `squad_optimizer.py`'s
+`PRICE_BIAS_CORRECTION` fixes it with a price-conditional correction, fit on
+one part of the 2025-26 season and validated on a held-out later part it
+never saw: +2.24 actual XI+captain points/GW on average, improved 10/17
+gameweeks. See `backtest_squad_optimizer.py`.
 
 ### Testing caveat
 
@@ -91,14 +99,9 @@ Team ID.**
 
 ## Known issues to fix next (before submitting a real squad)
 
-1. **Objective function needs reweighting.** Current run leaves ~£8m unspent and
-   skips proven premiums (no Haaland/Salah-tier picks) because raw rolling-form
-   points doesn't capture explosive ceiling the way price does. Fix: blend in
-   FPL's own `ep_next` field (from bootstrap-static) and last season's raw
-   total_points, not just rolling average.
-2. **113 unmatched players** are on a crude fallback — worth a second matching
+1. **113 unmatched players** are on a crude fallback — worth a second matching
    pass (e.g. against understat/fbref) for anyone likely to start.
-3. No live FPL API connector yet (`fantasy.premierleague.com/api/bootstrap-static/`,
+2. No live FPL API connector yet (`fantasy.premierleague.com/api/bootstrap-static/`,
    `/api/entry/{id}/`, `/api/entry/{id}/event/{gw}/picks/`) — needed to pull
    real-time prices/ownership/injury news and to read your and friends' actual
    squads by Team ID. This sandbox can't reach that domain directly (not
@@ -117,7 +120,6 @@ Team ID.**
   lives on the real FPL account itself and needs no extra storage.)
 - Deployment to Streamlit Community Cloud (works locally now, needs a GitHub
   repo + share.streamlit.io setup to get a link you can actually send friends)
-- Ceiling/variance-aware squad optimization (see limitation above)
 - The monitor only checks starting-XI injuries/suspensions right now — not
   price-change opportunities, fixture swings, or bench cover. Good enough for
   "don't get caught out by a last-minute injury," not yet a full weekly
