@@ -70,3 +70,33 @@ def save_email_alerts_enabled(google_sub: str, enabled: bool) -> None:
         "email_alerts_enabled": enabled,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
+
+
+FRIEND_TABLE = "friend_team_ids"
+
+
+def get_friend_team_ids(google_sub: str) -> list[int]:
+    """This manager's persisted Friends list - empty if they've never added
+    one. Ordered by when they were added, oldest first, so the tab order
+    stays stable across visits instead of shuffling."""
+    client = get_client()
+    resp = client.table(FRIEND_TABLE).select("friend_team_id").eq("google_sub", google_sub) \
+        .order("added_at").execute()
+    return [row["friend_team_id"] for row in resp.data]
+
+
+def add_friend_team_id(google_sub: str, team_id: int) -> None:
+    """Plain insert, not an upsert - the (google_sub, friend_team_id) unique
+    constraint on the table itself rejects a duplicate add (raises), so
+    callers that already de-dupe against get_friend_team_ids() before
+    calling this (as app.py's Friends tab does) won't normally hit it."""
+    client = get_client()
+    client.table(FRIEND_TABLE).insert({
+        "google_sub": google_sub,
+        "friend_team_id": team_id,
+    }).execute()
+
+
+def remove_friend_team_id(google_sub: str, team_id: int) -> None:
+    client = get_client()
+    client.table(FRIEND_TABLE).delete().eq("google_sub", google_sub).eq("friend_team_id", team_id).execute()
