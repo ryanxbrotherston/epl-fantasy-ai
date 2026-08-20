@@ -71,24 +71,33 @@ def _player_card_html(card: dict) -> str:
 
     tooltip = f"{card['basis']}: {card['detail']}"
 
-    # <details>/<summary> instead of an onclick handler: confirmed live
-    # (2026-08-21) that Streamlit's st.markdown(unsafe_allow_html=True)
-    # runs content through a bundled DOMPurify before rendering, which
-    # strips onclick/onerror and every other inline event-handler attribute
-    # unconditionally (checked in a real browser - a JS-dispatched click on
-    # a span with onclick="..." did nothing; getAttribute('onclick') came
-    # back null even though the source string clearly had it). No amount of
-    # HTML formatting works around that - it's attribute-level stripping,
-    # not a parsing quirk. <details>/<summary> is a native tap-to-toggle
-    # disclosure widget requiring zero JS, so there's nothing for the
-    # sanitizer to strip - confirmed working (open/close on tap) in the
-    # same live check.
+    # Neither of the two elements below use a JS event handler
+    # (onclick/onerror) - confirmed live (2026-08-21) that Streamlit's
+    # st.markdown(unsafe_allow_html=True) runs content through a bundled
+    # DOMPurify before rendering, which strips onclick/onerror and every
+    # other inline event-handler attribute unconditionally (checked in a
+    # real browser - a JS-dispatched click on a span with onclick="..." did
+    # nothing; getAttribute('onclick') came back null even though the
+    # source string clearly had it, and the pre-existing onerror-based
+    # badge-fallback trick below turned out to have been silently dead the
+    # same way). No amount of HTML formatting works around that - it's
+    # attribute-level stripping, not a parsing quirk. Both replacements are
+    # CSS-only:
+    #  - <details>/<summary> (flag popover) is a native tap-to-toggle
+    #    disclosure widget requiring zero JS - confirmed working (open/
+    #    close on tap) live.
+    #  - The badge itself is now a background-image div layered over a
+    #    solid-color circle (pv-badge-fallback), instead of an <img> with
+    #    onerror. A failed background-image simply doesn't paint anything
+    #    (unlike a failed <img>, which shows a broken-image glyph) - so on
+    #    a 404 the colored circle underneath just shows through on its
+    #    own, no JS/error-handling needed at all.
     return f"""
     <div class="pv-card">
         <div class="pv-badge-wrap">
             <div class="pv-badge-ring"></div>
-            <img src="{badge_url}" class="pv-badge" />
-            <div class="pv-badge-fallback" style="display:none; background:{fallback_color};"></div>
+            <div class="pv-badge-fallback" style="background:{fallback_color};"></div>
+            <div class="pv-badge" style="background-image:url('{badge_url}');"></div>
             {armband}
             <details class="pv-flag-details" title="{tooltip}">
                 <summary class="pv-flag-dot" style="background:{flag_color};"></summary>
@@ -206,12 +215,14 @@ PITCH_CSS = """
     position: absolute; inset: -3px; border-radius: 50%;
     background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.12);
 }
-.pv-badge { width: 40px; height: 40px; object-fit: contain; position: relative; z-index: 1;
-            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); }
+.pv-badge {
+    position: absolute; inset: 0; z-index: 2;
+    background-size: contain; background-position: center; background-repeat: no-repeat;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+}
 .pv-badge-fallback {
-    width: 40px; height: 40px; border-radius: 50%;
-    align-items: center; justify-content: center;
-    position: relative; z-index: 1;
+    position: absolute; inset: 0; z-index: 1;
+    border-radius: 50%;
 }
 .pv-armband {
     position: absolute; top: -6px; right: -6px;
