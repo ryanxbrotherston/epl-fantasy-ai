@@ -18,6 +18,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 import fpl_api
 import lineup_predictor
+import manager_store
 from squad_optimizer import load_predictions, pick_squad, pick_starting_xi, BUDGET
 
 st.set_page_config(page_title="EPL Fantasy AI", page_icon="⚽", layout="wide")
@@ -263,7 +264,51 @@ def render_team_lookup(key_prefix: str, default_id: int | None = None):
 
 with tab_mine:
     st.subheader("Your team")
-    render_team_lookup("mine")
+
+    if not st.user.is_logged_in:
+        st.info("Log in with Google to save your Team ID once and have it remembered on "
+                 "every future visit - no re-entering it, no browser-local tricks that "
+                 "break if you switch devices.")
+        st.button("Log in with Google", on_click=st.login, key="mine_login")
+    else:
+        top_l, top_r = st.columns([4, 1])
+        top_l.caption(f"Logged in as {st.user.email}")
+        if top_r.button("Log out", key="mine_logout"):
+            st.logout()
+
+        try:
+            profile = manager_store.get_manager_profile(st.user.sub)
+            store_error = None
+        except Exception as e:
+            profile, store_error = None, e
+
+        if store_error is not None:
+            st.error(f"Couldn't reach the persistent store right now: {store_error}")
+            st.caption("Falling back to one-off entry - it just won't be remembered this time.")
+            render_team_lookup("mine")
+        else:
+            saved_team_id = profile.get("fpl_team_id") if profile else None
+
+            if saved_team_id is None:
+                st.markdown("**First time here** — enter your FPL Team ID once and it'll be "
+                            "remembered for next time.")
+                new_id = st.number_input(
+                    "Your FPL Team ID", min_value=1, step=1, key="mine_first_id",
+                    help="Find this in the FPL site URL when viewing 'Pick Team' or 'Gameweek history'.",
+                )
+                if st.button("Save and load my team", key="mine_save_first"):
+                    manager_store.save_fpl_team_id(st.user.sub, st.user.email, st.user.name, int(new_id))
+                    st.rerun()
+            else:
+                st.success(f"Team ID **{saved_team_id}** remembered — no need to re-enter it.")
+                with st.expander("Change my saved Team ID"):
+                    updated_id = st.number_input(
+                        "New FPL Team ID", min_value=1, step=1, value=saved_team_id, key="mine_update_id",
+                    )
+                    if st.button("Update saved Team ID", key="mine_save_update"):
+                        manager_store.save_fpl_team_id(st.user.sub, st.user.email, st.user.name, int(updated_id))
+                        st.rerun()
+                render_team_lookup("mine", default_id=saved_team_id)
 
 
 with tab_friends:
