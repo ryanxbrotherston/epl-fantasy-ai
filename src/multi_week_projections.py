@@ -33,8 +33,12 @@ def build_gw_fixture_map(fixtures: pd.DataFrame, gameweeks: list[int]) -> dict:
 def build_projection_table(squad_predictions: pd.DataFrame, fixtures: pd.DataFrame,
                              gameweeks: list[int], model_bundle: dict, league_avg_lambda: float,
                              team_name_col: str = "team_name") -> pd.DataFrame:
-    """squad_predictions needs: id, web_name, position, team_name, predicted_points
-    (the season-baseline blended prediction, e.g. from squad_optimizer.load_predictions()).
+    """squad_predictions needs: id, web_name, position, team_name, now_cost,
+    predicted_points (the season-baseline blended prediction, e.g. from
+    squad_optimizer.load_predictions()). now_cost is carried through
+    unmodified (not fixture-adjusted, unlike predicted_points) - the
+    planner's budget constraint needs it on this table since it's the one
+    passed into multi_week_planner.plan().
     Returns a wide table: one row per player, one column per gameweek.
     """
     from match_model import predict_lambda
@@ -42,7 +46,7 @@ def build_projection_table(squad_predictions: pd.DataFrame, fixtures: pd.DataFra
 
     fixture_map = build_gw_fixture_map(fixtures, gameweeks)
 
-    result = squad_predictions[["id", "web_name", "position", team_name_col, "predicted_points"]].copy()
+    result = squad_predictions[["id", "web_name", "position", team_name_col, "now_cost", "predicted_points"]].copy()
     for gw in gameweeks:
         col = []
         for _, player in result.iterrows():

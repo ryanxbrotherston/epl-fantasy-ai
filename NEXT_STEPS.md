@@ -100,6 +100,11 @@ and each script's docstring for the numbers and what they mean.
   **Known simplification**: the per-week budget constraint doesn't yet
   distinguish buy price from sell price (FPL takes a cut on profit when you
   sell a risen player) - fine for a first pass, worth tightening.
+  **2026-08-20**: no persisted backtest script exists for the 2022-23 DGW
+  claim above (it was ad-hoc, never saved) - see "multi_week_planner
+  re-verification" below. Also found and fixed a real bug on the first live
+  end-to-end run of the full pipeline: `build_projection_table()` didn't
+  carry `now_cost` through, which `plan()` needs for its budget constraint.
 
 ## Squad optimizer premium fix (2026-08-19 overnight session)
 
@@ -198,6 +203,27 @@ that starts filtering out genuine rotation-player differentials rather than
 just noise, so 60 was kept as the principled cutoff rather than the metric-
 maximizing one.
 
+**Re-verified 2026-08-20** against the retrained (post-dedup-fix) points
+model - same script, same held-out season/GW range, no code changes needed
+(`backtest_risk_analyzer_minutes_floor.py` already builds its own rolling
+features from `backtest_squad_optimizer.py`'s helpers, which already use the
+new model). Result: **essentially unchanged, if anything slightly stronger**:
+
+| | before | after (retrained model) |
+|---|---|---|
+| floor=0 (no filter) | 1.60 pts/pick | 1.438 pts/pick |
+| floor=60 (shipped) | 3.42 pts/pick | 3.443 pts/pick |
+| mean lift | +1.82 | +2.005 |
+| GWs improved (of 32) | 31 | 31 |
+
+Unlike the squad-optimizer price-bias correction (which shifted
+meaningfully when the model was retrained - see below), this fix is robust
+to it. Makes sense: the minutes floor is a hard filter on `roll_minutes`
+(observed playing time, not a model prediction), not a correction tuned
+against the model's specific bias pattern - it doesn't care what the exact
+`predicted_points` values are, only whether a player has enough of a track
+record for ranking among them to mean anything. Nothing to change here.
+
 ## Dixon-Coles correction (2026-08-19 overnight session)
 
 Implemented per the standard Dixon-Coles (1997) approach: a correction
@@ -223,6 +249,73 @@ weighted seasons, just doesn't show the low-score correlation the original
 1990s data did. Nothing currently calls `fixture_probabilities()` outside
 the backtest (it's not wired into the live app yet), so this was a
 contained, low-risk change.
+
+## multi_week_planner re-verification (2026-08-20 session)
+
+Checked whether last night's "tested against real 2022-23 double/blank
+gameweeks" claim for `multi_week_planner.py`/`multi_week_projections.py`
+still holds after the `merged_gw.csv` dedup fix retrained `points_model.pkl`.
+**Could not literally "re-run the existing backtest" - there isn't one.**
+Unlike `squad_optimizer.py`/`risk_analyzer.py`, there's no
+`backtest_multi_week_planner.py` in the repo (checked: grepped the whole
+tree for `multi_week_planner`/`multi_week_projections`, only the module
+files and this doc reference them). The 2022-23 DGW validation was done
+ad-hoc last session and never saved as a script, so there's no numeric
+headline metric to compare before/after either - the original claim was
+qualitative ("correctly spikes... sensible timing"), not a pts/GW number
+like the other two fixes. **Worth writing an actual
+`backtest_multi_week_planner.py` at some point so this doesn't keep
+happening** - didn't do it tonight since it wasn't the ask, but flagging it
+as a real gap, same category as the missing dedup fix was.
+
+What was actually checked instead, both against real data:
+
+1. **Is the DGW/blank-fixture logic even coupled to `points_model.pkl`?**
+   No - by construction. `multi_week_projections.build_projection_table()`
+   takes `predicted_points` as an opaque per-player number and either sums
+   it across however many fixtures a team has that gameweek (adjusted by
+   `match_model`'s fixture-difficulty multiplier) or zeroes it if there are
+   none - it never looks at how that number was produced. A retrained
+   points model literally cannot change this behavior. Verified this isn't
+   just a code-reading claim: pulled 2022-23's real fixtures.csv, confirmed
+   real DGWs independently from the data (Chelsea and Fulham both play
+   twice in real GW19, Man City/Man Utd/Spurs/Crystal Palace in real GW20)
+   and a real blank (Brentford, GW25), ran them through the current
+   `build_projection_table()` with a flat dummy `predicted_points=5.0` for
+   every player - Chelsea GW19 correctly spiked to 9.16, Man City GW20 to
+   14.99, Brentford GW25 came out exactly 0.0. Structurally intact,
+   independent of any model retrain, past or future.
+
+2. **Does the full pipeline still run end-to-end with the retrained model?**
+   This surfaced a real, separate bug, unrelated to the retrain:
+   `multi_week_planner.plan()` requires a `now_cost` column on
+   `projection_table` for its budget constraint, but
+   `build_projection_table()` never carried `now_cost` through from
+   `squad_predictions` in the first place - a `KeyError` on the very first
+   live smoke test of the full pipeline (`load_predictions()` →
+   `build_projection_table()` → `plan()`), meaning this exact path may
+   never have actually been run end-to-end as committed. Fixed by carrying
+   `now_cost` through unmodified (not fixture-adjusted, unlike
+   `predicted_points`) in `build_projection_table()`, matching the existing
+   pattern for `id`/`web_name`/`position`/`team_name`. After the fix, ran
+   the full pipeline for real against live current-season data (528
+   available players, GW1-5, real chip windows from bootstrap-static) with
+   the retrained model: solved successfully, produced a sane 5-week plan
+   (consistent Haaland captaincy, wildcard in GW2, free hit in GW4, triple
+   captain in GW5 - plausible chip spread for a fresh-account opening
+   horizon, though this is a live-data smoke test, not a re-run of the
+   qualitative 2022-23 chip-timing check, which would need that season's
+   real chip-window data to repeat properly).
+
+**Bottom line**: the part of the original claim that's mechanically
+guaranteed (DGW sum / blank zero) is confirmed still correct and provably
+un-affected by any model retrain. The part that does depend on
+`predicted_points` (which players/chips the ILP actually picks) has no
+persisted before/after to compare, same situation as the squad-optimizer
+correction until it's backtested with real numbers - the pipeline runs and
+solves correctly now (it didn't, until the `now_cost` fix), but "sensible
+chip timing" hasn't been re-validated against real fixture congestion the
+way it was last night.
 
 ## Live API sanity check (2026-08-20 session)
 
@@ -323,15 +416,17 @@ leaning on this number for a real decision (e.g. does the correction need a
 different functional form now, or is the weaker result mostly just fewer
 duplicate-inflated premium-player rows propping up the old fit).
 
-**Not re-verified tonight, flagged for whoever picks this up next**:
-`risk_analyzer.py` and `multi_week_planner.py`/`multi_week_projections.py`
-both consume `squad_optimizer.load_predictions()`, so they're downstream of
-tonight's retrained model and refit correction too. `risk_analyzer.py`'s
-minutes-floor backtest (`backtest_risk_analyzer_minutes_floor.py`) and
-`multi_week_planner.py`'s DGW test haven't been re-run against the new
-model - their previously-reported numbers may also be slightly stale, same
-mechanism as the squad optimizer above. Didn't chase this further tonight
-to stay inside the stated priority order; flagging rather than guessing.
+**Update 2026-08-20**: both re-verified now. `risk_analyzer.py`'s
+minutes-floor backtest holds essentially unchanged against the retrained
+model (see "Risk analyzer minutes floor" above for the numbers) - it's a
+hard filter on observed minutes, not a fit against the model's bias
+pattern, so it was never really exposed the way the price correction was.
+`multi_week_planner.py` has no persisted backtest to re-run in the first
+place (see "multi_week_planner re-verification" below) - confirmed instead
+that its DGW/blank handling is structurally independent of the points
+model (provably can't regress from a retrain) and found+fixed an unrelated
+`now_cost` plumbing bug on the first real end-to-end run of the full
+pipeline.
 
 `models/points_model.pkl` and `models/feature_columns.json` are
 regenerated and committed with this fix.
