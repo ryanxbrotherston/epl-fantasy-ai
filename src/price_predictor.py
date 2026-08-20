@@ -31,6 +31,47 @@ TRAIN_SEASONS = ["2020-21", "2021-22", "2022-23", "2023-24", "2024-25"]
 TEST_SEASON = "2025-26"
 
 
+def predict_price_moves(elements_df: pd.DataFrame, total_players: int) -> pd.DataFrame:
+    """Live-inference counterpart to build_and_backtest() above, for the app's
+    own "buy now before it rises / sell now before it falls" timing note (see
+    src/squad_alert_checks.py callers in app.py). Trained on
+    transfer_momentum = transfers_balance / selected (weekly-resolution
+    historical columns - see load_price_history) - the live equivalent,
+    confirmed against a real bootstrap-static response (2026-08-21):
+    elements carry transfers_in_event/transfers_out_event (this gameweek's
+    balance) and selected_by_percent (a percentage, e.g. 36.6, NOT a
+    fraction), with the raw ownership count nowhere on the element itself -
+    reconstructed here as selected_by_percent/100 * total_players (bootstrap's
+    own top-level 'total_players'), the only way to get an absolute
+    denominator matching training's 'selected' units.
+
+    Returns id, prob_rise, prob_fall for every row in elements_df. Silently
+    returns an empty frame if models/price_model.pkl hasn't been built
+    (build_and_backtest() never run) rather than raising - this is a
+    supplementary timing note, not something that should break the page.
+    """
+    model_path = MODEL_DIR / "price_model.pkl"
+    if not model_path.exists():
+        return pd.DataFrame(columns=["id", "prob_rise", "prob_fall"])
+
+    import joblib
+    models = joblib.load(model_path)
+
+    df = elements_df.copy()
+    transfers_balance = (
+        pd.to_numeric(df["transfers_in_event"], errors="coerce").fillna(0)
+        - pd.to_numeric(df["transfers_out_event"], errors="coerce").fillna(0)
+    )
+    selected = pd.to_numeric(df["selected_by_percent"], errors="coerce").fillna(0) / 100 * total_players
+    momentum = (transfers_balance / selected.replace(0, np.nan)).to_frame("transfer_momentum")
+
+    out = pd.DataFrame({"id": df["id"]})
+    out["prob_rise"] = models["rise"].predict_proba(momentum.fillna(0))[:, 1]
+    out["prob_fall"] = models["fall"].predict_proba(momentum.fillna(0))[:, 1]
+    out.loc[momentum["transfer_momentum"].isna(), ["prob_rise", "prob_fall"]] = np.nan
+    return out
+
+
 def load_price_history(season: str) -> pd.DataFrame:
     df = pd.read_csv(DATA_DIR / season / "gws" / "merged_gw.csv", encoding="utf-8-sig")
     df = df.sort_values(["element", "GW"])
