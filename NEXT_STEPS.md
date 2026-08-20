@@ -4,6 +4,33 @@ This is a working repo, not a blank slate — read the code before planning
 anything, especially `squad_optimizer.py`, `match_model.py`, and
 `multi_week_planner.py`. The README's "Known issues" section is accurate.
 
+## Overall rank display (2026-08-20 session)
+
+Priority 3. Confirmed the exact field against a live response rather than
+assuming: `entry/{team_id}/`'s `summary_overall_points` and
+`summary_overall_rank`. Both are `null` right now for every manager
+checked, including established ones with years of history - genuinely
+FPL's real current state (nobody's overall rank/points exist until a
+gameweek's been scored), not a bug.
+
+Found and fixed a real latent bug while adding this: `render_team_lookup`
+had `entry.get('summary_overall_rank', 'N/A'):,}` - `.get()`'s default
+only applies when the key is *missing*, not when it's present but `None`,
+and the key is always present (just `None` pre-season) - so this would
+have raised `TypeError: unsupported format string passed to
+NoneType.__format__` the first time it actually ran with real null-rank
+data, which is happening right now. It was silently masked by an outer
+`if entry.get("summary_overall_points"):` guard, but that's not a
+guaranteed protection (points and rank aren't always in lockstep). Fixed
+via a proper `format_rank()` helper that checks for `None` explicitly.
+
+Added "Total points" and "Overall rank" metrics (via the new
+`format_rank()` helper, `"N/A yet"` when null) alongside the existing
+Bank/Team value in the AI Team locked/live mode and the shared
+`render_team_lookup` (My Team + Friends). AI Team propose mode has no
+real FPL account behind it, so nothing to add there. Verified against
+live data (no crash, correct "N/A yet" display) and a full app boot.
+
 ## Predicted lineup integration (2026-08-20 session)
 
 Priority 2. Ryan wanted a real predicted-lineup source (team news/press

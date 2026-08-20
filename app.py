@@ -50,6 +50,15 @@ def load_predicted_starting_ids():
 _FLAG_LABEL = {"green": "🟢", "yellow": "🟡", "red": "🔴", "unknown": "❔"}
 
 
+def format_rank(entry: dict) -> str:
+    """entry['summary_overall_rank'] - FPL's own last-known overall rank
+    field (confirmed against a live response 2026-08-20). Null pre-season
+    and until a manager's first gameweek is scored - not a bug, that's
+    genuinely FPL's own state right now."""
+    rank = entry.get("summary_overall_rank")
+    return f"{rank:,}" if rank is not None else "N/A yet"
+
+
 def add_starting_likelihood(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
     """Adds a 'Starting?' column: an emoji flag plus whether it's based on
     FPL's own official status or fpledits.com's early prediction - see
@@ -200,9 +209,11 @@ with tab_ai:
                                           "role": "Role", "now_cost": "Price", "ep_next": "FPL's next-GW est."}),
                         hide_index=True, use_container_width=True,
                     )
-                    c1, c2 = st.columns(2)
-                    c1.metric("Bank", f"£{history['bank'] / 10:.1f}m")
-                    c2.metric("Team value", f"£{history['value'] / 10:.1f}m")
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Total points", entry.get("summary_overall_points") or "N/A yet")
+                    c2.metric("Overall rank", format_rank(entry))
+                    c3.metric("Bank", f"£{history['bank'] / 10:.1f}m")
+                    c4.metric("Team value", f"£{history['value'] / 10:.1f}m")
 
 
 # ---------- shared: team lookup by ID ----------
@@ -223,8 +234,6 @@ def render_team_lookup(key_prefix: str, default_id: int | None = None):
         return
 
     st.success(f"**{entry['name']}** — managed by {entry['player_first_name']} {entry['player_last_name']}")
-    if entry.get("summary_overall_points"):
-        st.caption(f"Overall points: {entry['summary_overall_points']} · Overall rank: {entry.get('summary_overall_rank', 'N/A'):,}")
 
     current_event = gw["id"] if gw["is_current"] else max(gw["id"] - 1, 1)
     result = fpl_api.team_picks_dataframe(int(team_id), current_event, bootstrap)
@@ -244,10 +253,12 @@ def render_team_lookup(key_prefix: str, default_id: int | None = None):
                           "role": "Role", "now_cost": "Price", "ep_next": "FPL's next-GW est."}),
         hide_index=True, use_container_width=True,
     )
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Bank", f"£{history['bank'] / 10:.1f}m")
-    c2.metric("Team value", f"£{history['value'] / 10:.1f}m")
-    c3.metric("Free transfers used", history.get("event_transfers", 0))
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total points", entry.get("summary_overall_points") or "N/A yet")
+    c2.metric("Overall rank", format_rank(entry))
+    c3.metric("Bank", f"£{history['bank'] / 10:.1f}m")
+    c4.metric("Team value", f"£{history['value'] / 10:.1f}m")
+    c5.metric("Free transfers used", history.get("event_transfers", 0))
 
 
 with tab_mine:
