@@ -4,44 +4,61 @@ This is a working repo, not a blank slate — read the code before planning
 anything, especially `squad_optimizer.py`, `match_model.py`, and
 `multi_week_planner.py`. The README's "Known issues" section is accurate.
 
-## Immediate blocker
+## Deployment status — CORRECTION (2026-08-20, later same day)
+
+The "Immediate blocker" and "Deployment prep" sections originally written
+earlier tonight (below, struck through in spirit — kept for the record,
+not deleted) asserted the AI account didn't exist and that `AI_TEAM_ID`/the
+Gmail App Password secret weren't set. **That was wrong, and Ryan corrected
+it directly.** Deployment is live and confirmed working: the Streamlit
+Cloud app is deployed (it had gone to sleep from inactivity, which is
+normal Streamlit Community Cloud behavior on the free tier, and has since
+been woken), and `AI_TEAM_ID` + the Gmail secret are both already set in
+GitHub Actions secrets.
+
+**The actual lesson, for this file and for whoever/whatever reads it
+next**: this session had no way to check GitHub's Secrets UI, Streamlit
+Cloud's dashboard, or whether a real FPL account existed under Ryan's
+name — those all require either browser access this session didn't have,
+or credentials it doesn't hold. The correct statement was always "I can't
+verify this from here," not "this doesn't exist." Conflating the two
+produced a confidently wrong claim in a document meant to be trusted at
+face value later. Below, the original sections are kept but should be read
+with that correction in mind — the concrete actions taken (GitHub push,
+workflow file review) are still accurate; the claims about what didn't
+exist yet are not.
+
+## Immediate blocker (ORIGINAL — see correction above, status unverified from this session)
 
 GW1 deadline is imminent (2026-08-21T17:30:00Z UTC — confirmed live from
-bootstrap-static tonight). Until Ryan has created the real AI-run FPL account
-and submitted a squad (using the AI Team tab's recommendation), nothing
-downstream — the monitor, the "locked/live" AI Team mode, transfer planning —
-has a real account to operate on. Don't build further on the assumption an
-account exists; confirm it does first.
+bootstrap-static tonight). This section assumed the real AI-run FPL account
+didn't exist yet; per the correction above, that was an unverified guess,
+not a confirmed fact — the account may well already exist. Don't assume
+either way from inside a session that can't check; ask Ryan or look for
+direct evidence (e.g. `AI_TEAM_ID` being set, which it is) before building
+on an assumption about account state.
 
-## Deployment prep (2026-08-20 session) — pushed, rest needs Ryan directly
+## Deployment prep (2026-08-20 session) — ORIGINAL (see correction above)
 
 Priority 3 tonight, as far as it could go without Ryan present:
 
 - **Pushed to GitHub**: `origin/main` is now current (was 2 commits behind).
   Confirmed no secrets in the diff (`.streamlit/secrets.toml` is already
-  gitignored) before pushing.
+  gitignored) before pushing. This part stands, unaffected by the
+  correction above.
 - **`.github/workflows/ai_monitor.yml` reviewed**: correctly wired to read
   `AI_TEAM_ID`/`ALERT_EMAIL_*` from GitHub Actions secrets, on an hourly
-  cron plus manual `workflow_dispatch`. Nothing to fix here — it's ready,
-  just unconfigured.
-- **Streamlit Community Cloud connection, and setting secrets in both
-  places, could NOT be done tonight** — genuinely blocked, not skipped:
-  1. No browser automation was available in this session (the Chrome
-     extension wasn't connected), and connecting Streamlit Cloud requires
-     an interactive GitHub-OAuth login at share.streamlit.io — nothing to
-     script around that.
-  2. `AI_TEAM_ID` doesn't exist yet — it's the ID of the real AI-run FPL
-     account, which per the "Immediate blocker" above hasn't been created.
-  3. `ALERT_EMAIL_APP_PASSWORD` doesn't exist yet either — needs Ryan to
-     turn on 2FA and generate a Gmail App Password himself
-     (myaccount.google.com/apppasswords); this isn't something that should
-     ever be typed into anything but Ryan's own Google account flow.
-  **What's left, exactly** (see README's "Setup for the email alerts"
-  section for the full steps): create the AI account and submit its GW1
-  squad → generate the Gmail App Password → add all four secrets in GitHub
-  repo Settings → Secrets and variables → Actions → New repository secret
-  → connect share.streamlit.io to this repo → add `AI_TEAM_ID` again in
-  Streamlit Cloud's own separate secrets manager (App settings → Secrets).
+  cron plus manual `workflow_dispatch`. Nothing to fix here. This also
+  stands.
+- ~~Streamlit Community Cloud connection, and setting secrets in both
+  places, could NOT be done tonight — genuinely blocked~~ **Incorrect as
+  written.** What was actually true: this session had no browser access to
+  check share.streamlit.io or GitHub's Secrets UI, so it could not verify
+  either was done. It was not true that they hadn't been done — both had
+  been, before this session started. Confirmed directly by Ryan: Streamlit
+  Cloud is deployed and live (was just asleep from inactivity), and
+  `AI_TEAM_ID`/the Gmail secret are already in GitHub Actions secrets.
+  Nothing left to do here as far as anyone in this thread knows.
 
 ## What's built and backtested (as of this handoff)
 

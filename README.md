@@ -82,6 +82,14 @@ Team ID.**
 
 ## Setup for the email alerts (do this once, before GW1)
 
+**Status as of 2026-08-20**: Ryan has confirmed steps 1-3 are done — the AI
+account exists, `AI_TEAM_ID` and the Gmail secret are set in GitHub Actions
+secrets. Streamlit Cloud itself is deployed and live (step 4's app
+connection). Whether step 4's *separate* `AI_TEAM_ID` entry in Streamlit
+Cloud's own secrets manager is also set hasn't been directly confirmed —
+worth a quick check in the AI Team tab (propose mode vs. locked/live mode
+tells you) rather than assuming either way.
+
 1. **Create the AI-run FPL account** on the real fantasy.premierleague.com site,
    submit its GW1 squad (use the AI Team tab's recommendation), note its Team ID
    from the URL.
@@ -123,8 +131,8 @@ Team ID.**
   added there only last that browser session. No shared leaderboard or
   cross-visit tracking yet. (Separate from the AI team's own state, which now
   lives on the real FPL account itself and needs no extra storage.)
-- Deployment to Streamlit Community Cloud (works locally now, needs a GitHub
-  repo + share.streamlit.io setup to get a link you can actually send friends)
+- ~~Deployment to Streamlit Community Cloud~~ **Done** — confirmed live
+  2026-08-20 (see "Setup for the email alerts" above).
 - The monitor only checks starting-XI injuries/suspensions right now — not
   price-change opportunities, fixture swings, or bench cover. Good enough for
   "don't get caught out by a last-minute injury," not yet a full weekly
