@@ -13,17 +13,21 @@ What it does each run:
   2. Checks every player in that squad against live injury/availability
      status - FPL's own OFFICIAL designation (injured/suspended/
      unavailable/highly doubtful), not a prediction.
-  3. Separately checks the starting XI against lineup_predictor.py's EARLY
+  3. Separately checks the starting XI against confirmed_lineup.py's
+     OFFICIAL team sheet (via highlightly.net, free tier - see
+     NEXT_STEPS.md for the source-vetting trail, including the two
+     candidates that didn't pan out first). Only ever checked within
+     CONFIRMED_LOOKUP_WINDOW_HOURS of a player's own kickoff - lineups
+     aren't released until ~30-40min before anyway, and the free tier
+     (100 req/day) isn't enough to poll every fixture every hour all week.
+  4. Also checks the starting XI against lineup_predictor.py's EARLY
      signal (fpledits.com's predicted-lineup snapshot) - anyone who looks
-     bench-likely there but has no official status issue gets flagged too,
-     clearly labeled as an early/predicted warning, not an official one.
-     See NEXT_STEPS.md for why this doesn't also do official pre-kickoff
-     team-sheet confirmation (~60-75 min before kickoff) - every source
-     checked for that had a real blocker (ToS, bot-protection, no API, or
-     paid-only); that piece stays manual for now.
-  4. For anyone flagged in either category who's in the starting XI,
-     computes a same-position replacement suggestion within budget.
-  5. Emails Ryan the specific change to make, IF this exact issue hasn't
+     bench-likely there but isn't already covered by a more authoritative
+     check above gets flagged too, clearly labeled as an early/predicted
+     warning, not an official one.
+  5. For anyone flagged in any category who's in the starting XI, computes
+     a same-position replacement suggestion within budget.
+  6. Emails Ryan the specific change to make, IF this exact issue hasn't
      already been alerted this gameweek (dedup via data/alert_log.json,
      committed back to the repo by the Action after each run).
 
@@ -41,6 +45,7 @@ import json
 import os
 import smtplib
 import sys
+from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -50,6 +55,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 import fpl_api
 import lineup_predictor
 import lineup_prediction_log
+import confirmed_lineup
+
+CONFIRMED_LOOKUP_WINDOW_HOURS = 2  # only spend Highlightly API calls this close to a kickoff -
+                                    # its lineups aren't released until ~30-40min before anyway,
+                                    # and its free tier is 100 req/day, not enough to poll hourly
+                                    # all week for fixtures nowhere near kickoff yet
 
 BASE = Path(__file__).resolve().parent.parent
 ALERT_LOG_PATH = BASE / "data" / "alert_log.json"
@@ -82,18 +93,19 @@ def flag_problem_players(picks_df: pd.DataFrame) -> pd.DataFrame:
     return starting[hard_out | doubtful]
 
 
-def flag_bench_likely_players(picks_df: pd.DataFrame, predicted_starting_ids: set | None) -> pd.DataFrame:
+def flag_bench_likely_players(picks_df: pd.DataFrame, predicted_starting_ids: set | None,
+                               already_flagged_ids: set) -> pd.DataFrame:
     """Starting XI players who look bench-likely per the EARLY signal
-    (fpledits.com's predicted lineup) but have no official FPL status
-    issue - i.e. genuinely new information beyond flag_problem_players,
-    not a duplicate of it. Returns an empty frame if the early source was
-    unreachable this run (predicted_starting_ids is None) - a fetch
-    failure must never get silently treated as "everyone's benched"."""
+    (fpledits.com's predicted lineup) but aren't already covered by a more
+    authoritative check (official FPL status, or an official confirmed
+    team sheet) - i.e. genuinely new information, not a duplicate of
+    either. Returns an empty frame if the early source was unreachable
+    this run (predicted_starting_ids is None) - a fetch failure must
+    never get silently treated as "everyone's benched"."""
     starting = picks_df[picks_df["multiplier"] > 0].copy()
     if predicted_starting_ids is None or starting.empty:
         return starting.iloc[0:0]
 
-    already_flagged_ids = set(flag_problem_players(picks_df)["element"])
     remaining = starting[~starting["element"].isin(already_flagged_ids)].copy()
     if remaining.empty:
         return remaining
@@ -106,6 +118,61 @@ def flag_bench_likely_players(picks_df: pd.DataFrame, predicted_starting_ids: se
     )
     remaining["early_flag"] = [f["flag"] for f in flags]
     return remaining[remaining["early_flag"] == "red"]
+
+
+def flag_confirmed_benched_players(picks_df: pd.DataFrame, all_players: pd.DataFrame, bootstrap: dict,
+                                    target_event: int, already_flagged_ids: set) -> pd.DataFrame:
+    """Starting XI players whose OFFICIAL team sheet (via highlightly.net,
+    see confirmed_lineup.py) has genuinely been released and confirms them
+    NOT starting - not a prediction, the real thing. Only ever checks
+    fixtures within CONFIRMED_LOOKUP_WINDOW_HOURS of kickoff (rate-limit
+    conscious - see module header) - for anyone else, returns nothing for
+    them rather than guessing, exactly like an unreached/not-yet-released
+    source does. Excludes anyone already flagged (official status takes
+    priority; a name-match failure here must never override it either way)."""
+    starting = picks_df[picks_df["multiplier"] > 0].copy()
+    starting = starting[~starting["element"].isin(already_flagged_ids)]
+    if starting.empty:
+        return starting
+
+    team_id_to_name = {t["id"]: t["name"] for t in bootstrap["teams"]}
+    names_by_id = all_players.set_index("id")[["first_name", "second_name"]]
+    fixtures = fpl_api.get_fixtures(target_event)
+    now = datetime.now(timezone.utc)
+
+    flagged_rows = []
+    lineup_cache = {}  # highlightly_match_id -> confirmed lineup dict, avoid re-fetching per player
+    for team_id in starting["team"].unique():
+        fixture = next((f for f in fixtures if f["team_h"] == team_id or f["team_a"] == team_id), None)
+        if fixture is None or fixture.get("kickoff_time") is None:
+            continue
+        kickoff = datetime.fromisoformat(fixture["kickoff_time"].replace("Z", "+00:00"))
+        hours_to_kickoff = (kickoff - now).total_seconds() / 3600
+        if not (0 <= hours_to_kickoff <= CONFIRMED_LOOKUP_WINDOW_HOURS or -0.5 <= hours_to_kickoff < 0):
+            continue  # not close enough to kickoff yet (or long finished) - don't spend the call
+
+        home_name = team_id_to_name[fixture["team_h"]]
+        away_name = team_id_to_name[fixture["team_a"]]
+        match_id = confirmed_lineup.find_match_id(home_name, away_name, fixture["kickoff_time"])
+        if match_id is None:
+            continue
+
+        if match_id not in lineup_cache:
+            lineup_cache[match_id] = confirmed_lineup.get_confirmed_lineup_names(match_id)
+        confirmed = lineup_cache[match_id]
+        if confirmed is None:
+            continue  # not released yet, or Highlightly unreachable - no data, not "not started"
+
+        team_players = starting[starting["team"] == team_id]
+        for _, player in team_players.iterrows():
+            if player["element"] not in names_by_id.index:
+                continue
+            first, second = names_by_id.loc[player["element"], ["first_name", "second_name"]]
+            status = confirmed_lineup.player_confirmed_status(first, second, player["web_name"], confirmed)
+            if status is False:
+                flagged_rows.append(player)
+
+    return pd.DataFrame(flagged_rows) if flagged_rows else starting.iloc[0:0]
 
 
 def suggest_replacement(problem_player: pd.Series, squad_ids: set, bank: int,
@@ -192,11 +259,17 @@ def main():
     all_players = fpl_api.players_dataframe(bootstrap)
 
     problems = flag_problem_players(picks_df)
-    bench_likely = flag_bench_likely_players(picks_df, predicted_starting_ids)
+    confirmed_benched = flag_confirmed_benched_players(
+        picks_df, all_players, bootstrap, target_event, set(problems["element"])
+    )
+    bench_likely = flag_bench_likely_players(
+        picks_df, predicted_starting_ids,
+        set(problems["element"]) | set(confirmed_benched["element"]),
+    )
 
-    if problems.empty and bench_likely.empty:
-        print(f"GW{target_event}: AI team's starting XI all clear (official status and "
-              f"early-prediction checks). No alert needed.")
+    if problems.empty and confirmed_benched.empty and bench_likely.empty:
+        print(f"GW{target_event}: AI team's starting XI all clear (official status, official "
+              f"team sheet, and early-prediction checks). No alert needed.")
         return
 
     alert_log = load_alert_log()
@@ -233,6 +306,28 @@ def main():
             lines.append(
                 f"• {problem['web_name']} ({status_label}) — no budget-feasible same-position "
                 f"replacement found within your bank (£{bank/10:.1f}m). Manual look needed."
+            )
+        new_issues.append(issue_key)
+
+    if not confirmed_benched.empty:
+        lines.append("\n=== CONFIRMED - official team sheet (highlightly.net) ===")
+    for _, benched_player in confirmed_benched.iterrows():
+        issue_key = f"{benched_player['element']}_confirmed_benched"
+        if issue_key in already_alerted:
+            continue
+
+        replacement = suggest_replacement(benched_player, squad_ids, bank, all_players, team_limit_counts)
+        if replacement is not None:
+            lines.append(
+                f"• {benched_player['web_name']} — officially NOT in the confirmed starting XI. "
+                f"Suggest transferring IN {replacement['web_name']} "
+                f"(£{replacement['now_cost']/10:.1f}m, {replacement['team_name']}) instead."
+            )
+        else:
+            lines.append(
+                f"• {benched_player['web_name']} — officially NOT in the confirmed starting XI. "
+                f"No budget-feasible same-position replacement found within your bank "
+                f"(£{bank/10:.1f}m). Manual look needed."
             )
         new_issues.append(issue_key)
 
