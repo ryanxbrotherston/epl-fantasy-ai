@@ -54,7 +54,20 @@ TEAM_NAME_OVERRIDES = {
 
 
 def _api_key() -> str | None:
-    return os.environ.get("HIGHLIGHTLY_API_KEY")
+    """GitHub Actions secret (ai_team_monitor.py's context) OR Streamlit
+    Cloud secret (app.py's context) - these are two separate secret
+    stores, same distinction as AI_TEAM_ID/ALERT_EMAIL_* - so both paths
+    are checked rather than assuming one. st.secrets access is wrapped
+    since it raises outside an actual Streamlit runtime (e.g. when this
+    module is imported from the plain ai_team_monitor.py script)."""
+    key = os.environ.get("HIGHLIGHTLY_API_KEY")
+    if key:
+        return key
+    try:
+        import streamlit as st
+        return st.secrets.get("highlightly", {}).get("api_key")
+    except Exception:
+        return None
 
 
 def _get(path: str, params: dict | None = None):

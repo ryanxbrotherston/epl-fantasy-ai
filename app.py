@@ -19,11 +19,47 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 import fpl_api
 import lineup_predictor
 import manager_store
+import confirmed_lineup
+import team_visuals
+import pitch_view
 from squad_optimizer import load_predictions, pick_squad, pick_starting_xi, BUDGET
+
+CONFIRMED_LOOKUP_WINDOW_HOURS = 3  # a bit more generous than ai_team_monitor.py's 2h -
+                                    # this is checked on-demand by page loads, not a fixed
+                                    # hourly cron, so a wider net avoids missing a release
+                                    # between visits; the 10min cache below bounds the cost
 
 st.set_page_config(page_title="EPL Fantasy AI", page_icon="⚽", layout="wide")
 
 DATA_DIR = Path(__file__).parent / "data"
+
+# Theme colors/font live in .streamlit/config.toml (Streamlit's own [theme]
+# section) - this block only adds what config.toml can't do declaratively:
+# real :hover states. Streamlit's tab buttons render via BaseWeb
+# ([data-baseweb="tab"]) - not a documented/stable public API, so this is
+# the one place in the app that could break on a Streamlit upgrade; if
+# tabs stop highlighting on hover after a version bump, this selector is
+# the first place to check.
+st.markdown("""
+<style>
+button[data-baseweb="tab"] {
+    transition: background-color 0.15s ease, color 0.15s ease;
+    border-radius: 8px 8px 0 0;
+}
+button[data-baseweb="tab"]:hover {
+    background-color: #534AB7 !important;
+}
+button[data-baseweb="tab"]:hover p {
+    color: #FFFFFF !important;
+}
+div[data-testid="stMetric"] {
+    background: #FFFFFF;
+    border-radius: 10px;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid #534AB733;
+}
+</style>
+""", unsafe_allow_html=True)
 
 
 # ---------- cached data loaders ----------
@@ -48,7 +84,47 @@ def load_predicted_starting_ids():
     return lineup_predictor.fetch_predicted_starting_ids()
 
 
-_FLAG_LABEL = {"green": "🟢", "yellow": "🟡", "red": "🔴", "unknown": "❔"}
+@st.cache_data(ttl=600)
+def load_confirmed_lineups_for_gameweek(_bootstrap: dict, target_event: int) -> dict:
+    """{team_id: {'starters': set[name], 'bench': set[name]}} for every
+    club whose fixture this gameweek is within CONFIRMED_LOOKUP_WINDOW_HOURS
+    of kickoff AND has a genuinely released highlightly.net lineup -
+    everyone else just isn't in this dict (same "no data yet" contract as
+    confirmed_lineup.py itself). 10min cache, shared across every visitor
+    hitting this deployed app - keeps this bounded well under
+    Highlightly's 100 req/day free tier regardless of traffic, same
+    principle as the kickoff-window gating in ai_team_monitor.py.
+    Leading underscore on _bootstrap tells st.cache_data not to hash it
+    (it's large and already itself cached/stable within its own TTL)."""
+    from datetime import datetime, timezone
+    team_id_to_name = {t["id"]: t["name"] for t in _bootstrap["teams"]}
+    fixtures = fpl_api.get_fixtures(target_event)
+    now = datetime.now(timezone.utc)
+    result = {}
+    for fixture in fixtures:
+        if fixture.get("kickoff_time") is None:
+            continue
+        kickoff = datetime.fromisoformat(fixture["kickoff_time"].replace("Z", "+00:00"))
+        hours_to_kickoff = (kickoff - now).total_seconds() / 3600
+        if not (-0.5 <= hours_to_kickoff <= CONFIRMED_LOOKUP_WINDOW_HOURS):
+            continue
+        home_name = team_id_to_name[fixture["team_h"]]
+        away_name = team_id_to_name[fixture["team_a"]]
+        match_id = confirmed_lineup.find_match_id(home_name, away_name, fixture["kickoff_time"])
+        if match_id is None:
+            continue
+        confirmed = confirmed_lineup.get_confirmed_lineup_names(match_id)
+        if confirmed is None:
+            continue
+        result[fixture["team_h"]] = confirmed
+        result[fixture["team_a"]] = confirmed
+    return result
+
+
+_BASIS_LABEL = {
+    "confirmed": "official status", "confirmed_lineup": "confirmed team sheet",
+    "early": "predicted", "none": "no data",
+}
 
 
 def format_rank(entry: dict) -> str:
@@ -60,21 +136,62 @@ def format_rank(entry: dict) -> str:
     return f"{rank:,}" if rank is not None else "N/A yet"
 
 
-def add_starting_likelihood(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
-    """Adds a 'Starting?' column: an emoji flag plus whether it's based on
-    FPL's own official status or fpledits.com's early prediction - see
-    lineup_predictor.py and NEXT_STEPS.md for why these are kept distinct
-    rather than blended into one unlabeled signal."""
+def compute_starting_likelihood(row: pd.Series, id_col: str, predicted_ids: set | None,
+                                 confirmed_lineups: dict, names_by_id: pd.DataFrame) -> dict:
+    """The single shared per-player flag computation - both the list-view
+    'Starting?' column and the pitch view's flag indicators are built
+    from this, so the two can never drift apart. Returns
+    lineup_predictor.starting_likelihood_flag()'s raw dict."""
+    player_id = row[id_col]
+    confirmed_status = None
+    team_id = row.get("team")
+    confirmed = confirmed_lineups.get(team_id) if team_id is not None else None
+    if confirmed is not None and player_id in names_by_id.index:
+        first, second = names_by_id.loc[player_id, ["first_name", "second_name"]]
+        confirmed_status = confirmed_lineup.player_confirmed_status(
+            first, second, row.get("web_name", ""), confirmed
+        )
+    return lineup_predictor.starting_likelihood_flag(player_id, row["status"], predicted_ids, confirmed_status)
+
+
+def build_pitch_cards(df: pd.DataFrame, id_col: str, points_col: str, bootstrap: dict,
+                       all_players: pd.DataFrame, target_event: int,
+                       captain_id=None, vice_id=None) -> list[dict]:
+    """Normalizes any of the three tabs' differently-shaped squad
+    dataframes into pitch_view's plain card-dict list - the one place
+    that shape translation happens, so pitch_view.py itself never needs
+    to know about fpl_api's column names vs. squad_optimizer's."""
     predicted_ids = load_predicted_starting_ids()
-    df = df.copy()
+    confirmed_lineups = load_confirmed_lineups_for_gameweek(bootstrap, target_event)
+    names_by_id = all_players.set_index("id")[["first_name", "second_name"]]
+    team_code_by_id = {t["id"]: t["code"] for t in bootstrap["teams"]}
 
-    def _label(row):
-        result = lineup_predictor.starting_likelihood_flag(row[id_col], row["status"], predicted_ids)
-        basis = {"confirmed": "official", "early": "predicted", "none": "no data"}[result["basis"]]
-        return f"{_FLAG_LABEL[result['flag']]} ({basis})"
+    cards = []
+    for _, row in df.iterrows():
+        result = compute_starting_likelihood(row, id_col, predicted_ids, confirmed_lineups, names_by_id)
+        points = pd.to_numeric(pd.Series([row.get(points_col)]), errors="coerce").iloc[0]
+        points = 0.0 if pd.isna(points) else float(points)
+        cards.append(pitch_view.build_card(
+            id_=row[id_col], name=row["web_name"], position=row["position"],
+            team_code=team_code_by_id.get(row["team"], -1), points=points,
+            is_captain=row[id_col] == captain_id, is_vice=row[id_col] == vice_id,
+            flag_result={"flag": result["flag"], "basis": _BASIS_LABEL[result["basis"]], "detail": result["detail"]},
+        ))
+    return cards
 
-    df["Starting?"] = df.apply(_label, axis=1)
-    return df
+
+def render_squad_pitch(xi_df: pd.DataFrame, bench_df: pd.DataFrame, id_col: str, points_col: str,
+                        bootstrap: dict, all_players: pd.DataFrame, target_event: int,
+                        captain_id=None, vice_id=None):
+    """The one call site every tab uses to go from a squad's XI/bench
+    dataframes to a rendered pitch - formation is derived from whatever's
+    actually in xi_df, not assumed."""
+    xi_cards = build_pitch_cards(xi_df, id_col, points_col, bootstrap, all_players, target_event,
+                                  captain_id, vice_id)
+    bench_cards = build_pitch_cards(bench_df, id_col, points_col, bootstrap, all_players, target_event,
+                                     captain_id, vice_id)
+    st.caption(f"Formation: {pitch_view.formation_from_xi(xi_cards)}")
+    st.markdown(pitch_view.PITCH_CSS + pitch_view.render_pitch(xi_cards, bench_cards), unsafe_allow_html=True)
 
 
 def refresh_predictions_with_live_data(base_preds: pd.DataFrame, bootstrap: dict) -> pd.DataFrame:
@@ -109,20 +226,23 @@ def refresh_predictions_with_live_data(base_preds: pd.DataFrame, bootstrap: dict
 # ---------- sidebar: gameweek status ----------
 
 st.title("⚽ EPL Fantasy AI")
-st.caption("🟢/🟡/🔴 = starting likelihood. **(official)** = FPL's own status field. "
-           "**(predicted)** = fpledits.com's predicted lineup - a third-party guess, not "
-           "an official team sheet, refreshed through the week as team news develops.")
+st.caption("The dot on each player's badge = starting likelihood (hover for detail). "
+           "🟢🟡🔴 with **official status** = FPL's own status field. With **confirmed team sheet** = "
+           "highlightly.net's real released lineup (only exists ~30-40min pre-kickoff). With "
+           "**predicted** = fpledits.com's third-party guess, refreshed through the week - not official.")
 
 try:
     bootstrap = load_bootstrap()
     gw = fpl_api.current_gameweek(bootstrap)
     st.sidebar.metric("Next deadline", gw["name"])
     st.sidebar.caption(gw["deadline_time"].replace("T", " ").replace("Z", " UTC"))
+    all_players = fpl_api.players_dataframe(bootstrap)
     live_ok = True
 except Exception as e:
     st.sidebar.error(f"Couldn't reach the live FPL API: {e}")
     st.sidebar.caption("Falling back to the offline seed data from the last build.")
     bootstrap = None
+    all_players = None
     live_ok = False
 
 
@@ -164,24 +284,12 @@ with tab_ai:
         c2.metric("Formation", formation)
         c3.metric("Predicted XI points", f"{xi['predicted_points'].sum():.1f}")
 
-        st.markdown(f"**Captain:** {captain['web_name']} ({captain['predicted_points']:.1f} pred pts)  \n"
-                    f"**Vice-captain:** {vice['web_name']} ({vice['predicted_points']:.1f} pred pts)")
-
-        st.markdown("##### Starting XI")
-        st.dataframe(
-            add_starting_likelihood(xi, "id")[["web_name", "position", "now_cost", "predicted_points", "Starting?"]]
-            .assign(now_cost=lambda d: (d["now_cost"] / 10).map("£{:.1f}m".format))
-            .rename(columns={"web_name": "Player", "position": "Pos", "now_cost": "Price", "predicted_points": "Pred pts"}),
-            hide_index=True, use_container_width=True,
-        )
-
-        st.markdown("##### Bench")
-        st.dataframe(
-            add_starting_likelihood(bench, "id")[["web_name", "position", "now_cost", "predicted_points", "Starting?"]]
-            .assign(now_cost=lambda d: (d["now_cost"] / 10).map("£{:.1f}m".format))
-            .rename(columns={"web_name": "Player", "position": "Pos", "now_cost": "Price", "predicted_points": "Pred pts"}),
-            hide_index=True, use_container_width=True,
-        )
+        if live_ok:
+            render_squad_pitch(xi, bench, "id", "predicted_points", bootstrap, all_players,
+                                gw["id"], captain_id=captain["id"], vice_id=vice["id"])
+        else:
+            st.info("Live FPL API unreachable - starting-likelihood flags need it, so the pitch "
+                    "view is skipped this run. Try again shortly.")
 
     else:
         st.caption("🔒 Live and locked — this reads directly from the AI's real FPL account. "
@@ -202,19 +310,21 @@ with tab_ai:
                     st.info(f"No squad locked in yet for Gameweek {current_event}.")
                 else:
                     picks_df, history = result
-                    st.dataframe(
-                        add_starting_likelihood(picks_df, "element")
-                        [["web_name", "position", "team_short", "role", "now_cost", "ep_next", "Starting?"]]
-                        .assign(now_cost=lambda d: (d["now_cost"] / 10).map("£{:.1f}m".format))
-                        .rename(columns={"web_name": "Player", "position": "Pos", "team_short": "Club",
-                                          "role": "Role", "now_cost": "Price", "ep_next": "FPL's next-GW est."}),
-                        hide_index=True, use_container_width=True,
-                    )
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("Total points", entry.get("summary_overall_points") or "N/A yet")
                     c2.metric("Overall rank", format_rank(entry))
                     c3.metric("Bank", f"£{history['bank'] / 10:.1f}m")
                     c4.metric("Team value", f"£{history['value'] / 10:.1f}m")
+
+                    xi = picks_df[picks_df["multiplier"] > 0]
+                    bench = picks_df[picks_df["multiplier"] == 0]
+                    captain_row = picks_df[picks_df["is_captain"]]
+                    vice_row = picks_df[picks_df["is_vice_captain"]]
+                    render_squad_pitch(
+                        xi, bench, "element", "ep_next", bootstrap, all_players, current_event,
+                        captain_id=captain_row["element"].iloc[0] if not captain_row.empty else None,
+                        vice_id=vice_row["element"].iloc[0] if not vice_row.empty else None,
+                    )
 
 
 # ---------- shared: team lookup by ID ----------
@@ -246,20 +356,22 @@ def render_team_lookup(key_prefix: str, default_id: int | None = None):
 
     picks_df, history = result
     st.markdown(f"##### Gameweek {current_event} squad")
-    st.dataframe(
-        add_starting_likelihood(picks_df, "element")
-        [["web_name", "position", "team_short", "role", "now_cost", "ep_next", "Starting?"]]
-        .assign(now_cost=lambda d: (d["now_cost"] / 10).map("£{:.1f}m".format))
-        .rename(columns={"web_name": "Player", "position": "Pos", "team_short": "Club",
-                          "role": "Role", "now_cost": "Price", "ep_next": "FPL's next-GW est."}),
-        hide_index=True, use_container_width=True,
-    )
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Total points", entry.get("summary_overall_points") or "N/A yet")
     c2.metric("Overall rank", format_rank(entry))
     c3.metric("Bank", f"£{history['bank'] / 10:.1f}m")
     c4.metric("Team value", f"£{history['value'] / 10:.1f}m")
     c5.metric("Free transfers used", history.get("event_transfers", 0))
+
+    xi = picks_df[picks_df["multiplier"] > 0]
+    bench = picks_df[picks_df["multiplier"] == 0]
+    captain_row = picks_df[picks_df["is_captain"]]
+    vice_row = picks_df[picks_df["is_vice_captain"]]
+    render_squad_pitch(
+        xi, bench, "element", "ep_next", bootstrap, all_players, current_event,
+        captain_id=captain_row["element"].iloc[0] if not captain_row.empty else None,
+        vice_id=vice_row["element"].iloc[0] if not vice_row.empty else None,
+    )
 
 
 with tab_mine:
@@ -270,6 +382,8 @@ with tab_mine:
                  "every future visit - no re-entering it, no browser-local tricks that "
                  "break if you switch devices.")
         st.button("Log in with Google", on_click=st.login, key="mine_login")
+        st.caption("Or skip login and just look your team up for this visit:")
+        render_team_lookup("mine_guest")
     else:
         top_l, top_r = st.columns([4, 1])
         top_l.caption(f"Logged in as {st.user.email}")
