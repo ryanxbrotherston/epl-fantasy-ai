@@ -415,6 +415,18 @@ with tab_mine:
                     st.rerun()
             else:
                 st.success(f"Team ID **{saved_team_id}** remembered — no need to re-enter it.")
+
+                def _on_toggle_email_alerts():
+                    manager_store.save_email_alerts_enabled(st.user.sub, st.session_state.mine_email_alerts)
+
+                st.checkbox(
+                    "Email me if my starting XI has an injury/suspension issue",
+                    value=profile.get("email_alerts_enabled", False),
+                    key="mine_email_alerts",
+                    on_change=_on_toggle_email_alerts,
+                    help="Opt-in only - nobody gets emailed without checking this themselves, "
+                         "and unchecking it stops future alerts immediately.",
+                )
                 with st.expander("Change my saved Team ID"):
                     updated_id = st.number_input(
                         "New FPL Team ID", min_value=1, step=1, value=saved_team_id, key="mine_update_id",

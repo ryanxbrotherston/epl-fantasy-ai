@@ -13,6 +13,7 @@ manager_profiles' RLS is enabled with zero policies specifically so the
 publishable key - if it were ever used here by mistake - gets nothing.
 """
 
+import os
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -23,7 +24,17 @@ TABLE = "manager_profiles"
 
 @st.cache_resource
 def get_client() -> Client:
-    return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["secret_key"])
+    """st.secrets is only populated inside a running Streamlit process -
+    friend_alert_monitor.py (see DECISION_friend_alerts.md) runs standalone
+    in GitHub Actions, same as ai_team_monitor.py, with no Streamlit runtime
+    at all. Falling back to plain env vars there lets both callers share
+    this one function instead of friend_alert_monitor.py forking its own
+    client construction."""
+    try:
+        url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["secret_key"]
+    except (FileNotFoundError, KeyError):
+        url, key = os.environ["SUPABASE_URL"], os.environ["SUPABASE_SECRET_KEY"]
+    return create_client(url, key)
 
 
 def get_manager_profile(google_sub: str) -> dict | None:
@@ -44,5 +55,18 @@ def save_fpl_team_id(google_sub: str, email: str | None, display_name: str | Non
         "email": email,
         "display_name": display_name,
         "fpl_team_id": team_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).execute()
+
+
+def save_email_alerts_enabled(google_sub: str, enabled: bool) -> None:
+    """Upsert the opt-in flag friend_alert_monitor.py filters on every run
+    (see DECISION_friend_alerts.md) - this is the actual consent record, so
+    it only ever changes when the manager themselves toggles it, never as a
+    side effect of saving a Team ID."""
+    client = get_client()
+    client.table(TABLE).upsert({
+        "google_sub": google_sub,
+        "email_alerts_enabled": enabled,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
