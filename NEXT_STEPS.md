@@ -4,6 +4,119 @@ This is a working repo, not a blank slate — read the code before planning
 anything, especially `squad_optimizer.py`, `match_model.py`, and
 `multi_week_planner.py`. The README's "Known issues" section is accurate.
 
+## Data/model audit (2026-08-20 remote-control session)
+
+Priority 4. Six items flagged as genuinely unverified - checked each
+against real code/data rather than assumed, per instructions:
+
+1. **Is `expected_goal_involvements` pulled in, or only xG/xA
+   separately?** Both - `feature_config.py`'s `OPTIONAL_STATS` lists
+   `expected_goals`, `expected_assists`, AND `expected_goal_involvements`
+   as three distinct rolling features, not one instead of the others.
+2. **Is raw shot volume used?** No - and it can't be: checked both live
+   `bootstrap-static` and the historical `merged_gw.csv` directly, neither
+   exposes `shots`/`shots_on_target` at all. Not a pipeline gap, a data-
+   availability limit (understat/fbref would have it; not currently
+   integrated).
+3. **Yellow-card-accumulation/suspension-threshold logic?** No -
+   `yellow_cards` is only a raw rolling-average feature the RandomForest
+   sees; nothing anywhere tracks a player's cumulative season count
+   against FPL's actual thresholds (5 by GW19, 10 by GW32). The model/
+   monitor only reacts *after* FPL itself marks someone suspended
+   (`status='s'`), never proactively flags "one yellow from a ban." A
+   real, genuine gap.
+4. **European fixture congestion (UCL/UEL weeks) factored in?** No, and
+   also a data-availability gap: FPL's own `fixtures/` endpoint only
+   returns Premier League fixtures (confirmed live: 10 for GW1, not 20 -
+   only intra-PL matches) - no way to know a club played in Europe
+   midweek from FPL's own data at all. Would need a separate external
+   source.
+5. **XGBoost vs. the shipped RandomForestRegressor, real backtest**:
+   `src/backtest_model_comparison.py` (new, persisted, reuses
+   `train_points_model.py`'s own data/feature functions directly so it's
+   a genuine apples-to-apples swap - same seasons, same features, same
+   recency weighting). Real result on the same held-out 2025-26 season:
+   RandomForest 1.0122 MAE vs. XGBoost 1.0168 MAE (naive baseline
+   1.0575) - **XGBoost is very slightly worse (0.5%)**, essentially a
+   wash, not a case to swap. LightGBM was NOT tested (scope decision for
+   time, not ruled out for a real reason) - worth doing if this result
+   makes a second gradient-boosted comparison seem worthwhile later.
+6. **Does `multi_week_planner` do genuine N-step-ahead prediction, or
+   reuse one prediction repeated?** Reuses one prediction, confirmed by
+   reading `multi_week_projections.build_projection_table()` directly:
+   `predicted_points` is computed ONCE upfront (the docstring's own words:
+   "the season-baseline blended prediction") and every gameweek in the
+   horizon just applies that same week's fixture-difficulty *scaling*
+   multiplier on top of it - expected minutes/form/rotation risk are never
+   re-estimated as the simulated weeks progress. A double-gameweek or a
+   tough fixture changes the *number*, but the underlying player-quality
+   estimate behind it never updates further out in the horizon than it
+   does one week out. Real limitation, not a bug - correct as designed,
+   just less sophisticated than true N-step-ahead would be.
+
+## Chip timing: already covered, verified not rebuilt (2026-08-20 remote-control session)
+
+Priority 3. Checked `multi_week_planner.py`'s `_extract_plan()` directly
+before assuming a gap existed: it already produces an explicit per-
+gameweek `"chip"` column in its output ("wildcard", "bench boost", "free
+hit", "triple captain", or combinations) - a real "use it in GW23" style
+recommendation, not silent factoring into the transfer math. Already
+confirmed working with real chip values in this session's earlier
+multi-week-planner smoke test (wildcard GW2, free hit GW4, triple
+captain GW5). Nothing to build here.
+
+## Trade suggestions for flagged players: already covered (2026-08-20 remote-control session)
+
+Priority 2. Checked `ai_team_monitor.py` directly before assuming a gap
+existed: `flag_bench_likely_players()` (fpledits early-red flag) and
+`flag_confirmed_benched_players()` (highlightly.net confirmed-red flag)
+both already call the same `suggest_replacement()` used for official
+injuries/suspensions - same budget/club-limit-respecting logic, each in
+its own clearly-labeled email section ("EARLY WARNING" / "CONFIRMED -
+official team sheet"). Built during tonight's earlier predicted-lineup
+and Highlightly sessions. Nothing to build here either.
+
+## Priority 1: full pitch-view UI overhaul (2026-08-20 remote-control session)
+
+Replaced the list-based `st.dataframe()` squad display across all three
+tabs with a real pitch view. Full detail in the commit message
+("Priority 1: full pitch-view UI overhaul...") - summary here:
+
+- **Team badges**: real, verified URL -
+  `https://resources.premierleague.com/premierleague/badges/{size}/t{code}.png`,
+  keyed by bootstrap-static's stable `code` (not the season-local `id`).
+  Downloaded and visually confirmed a genuine Arsenal crest before wiring
+  in, not just a 200 status check. `src/team_visuals.py`.
+- **Pitch/formation/bench**: `src/pitch_view.py`, dataframe-agnostic,
+  formation derived dynamically from whatever's actually in the real
+  starting XI. Tested against 4 different formations (3-5-2 from the live
+  optimizer, 4-3-3, 5-4-1, 4-4-2) and all 4 flag states (official/
+  confirmed team sheet/predicted/unknown).
+- **Three-tier flag now shared everywhere**: extended
+  `lineup_predictor.starting_likelihood_flag()` in place (backward
+  compatible) to fold in highlightly.net's confirmed team sheet as a real
+  third tier, so the pitch view's flags and `ai_team_monitor.py`'s email
+  alerts are driven by the exact same function - one source of truth.
+  `confirmed_lineup.py`'s API-key lookup now checks both GitHub Actions'
+  env var and Streamlit Cloud's `st.secrets`, since it's used from both
+  contexts now.
+- **Theme**: `.streamlit/config.toml` (purple wash background, Space
+  Grotesk via Google Fonts) plus custom CSS for real tab `:hover` states,
+  which `config.toml` can't do declaratively.
+- **Real gap found and fixed against the ask**: My Team's logged-out
+  state previously showed *only* a login button - no fallback at all, a
+  visitor who didn't want to log in was fully blocked. Added a manual
+  Team-ID lookup fallback (reuses the same code Friends already uses).
+- Removed `add_starting_likelihood()` and `_FLAG_LABEL` - dead code once
+  every call site moved to the pitch view; `compute_starting_likelihood()`
+  is the shared core both the old and new versions were built from.
+
+**Not independently visually verified**: no browser access this session -
+verification was structural (HTML output checked programmatically for
+correct badge/fallback/flag/captain markup) and via real data integration
+tests (formation detection, card counts, flag states all checked against
+live FPL data), not a literal screenshot. Worth a real look once deployed.
+
 ## backtest_multi_week_planner.py (2026-08-20 session)
 
 Priority 4. Closed the gap flagged in this file's own "multi_week_planner
