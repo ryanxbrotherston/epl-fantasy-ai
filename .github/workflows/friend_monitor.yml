@@ -1,0 +1,44 @@
+name: Friend Alert Monitor
+
+# Same reasoning as ai_monitor.yml: Streamlit Community Cloud apps only run
+# when someone's browsing them, so the actual scheduled checking has to
+# live here instead. This is a separate workflow/script from ai_monitor.yml
+# on purpose - see DECISION_friend_alerts.md - so a bug or outage here can
+# never take down Ryan's own AI-team alerting.
+on:
+  schedule:
+    - cron: "0 * * * *"   # every hour, on the hour (UTC) - same cadence as ai_monitor.yml
+  workflow_dispatch: {}     # lets you trigger a manual run from the Actions tab
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run friend monitor
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
+          ALERT_EMAIL_APP_PASSWORD: ${{ secrets.ALERT_EMAIL_APP_PASSWORD }}
+          HIGHLIGHTLY_API_KEY: ${{ secrets.HIGHLIGHTLY_API_KEY }}
+        run: python src/friend_alert_monitor.py
+
+      - name: Commit updated log (if changed)
+        run: |
+          git config user.name "friend-alert-monitor"
+          git config user.email "actions@github.com"
+          # friend_alert_log.json: per-friend alert dedup, separate from
+          # ai_team_monitor.py's own data/alert_log.json - see
+          # DECISION_friend_alerts.md for why these stay separate files.
+          [ -f data/friend_alert_log.json ] && git add data/friend_alert_log.json
+          git diff --staged --quiet || git commit -m "Update friend monitor log [skip ci]"
+          git push || true
