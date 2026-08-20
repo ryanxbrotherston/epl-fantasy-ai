@@ -70,6 +70,10 @@ def _player_card_html(card: dict) -> str:
         points_class += " pv-points-captain"
 
     tooltip = f"{card['basis']}: {card['detail']}"
+    toggle_js = (
+        "var p=this.nextElementSibling; "
+        "p.style.display = (p.style.display === 'block') ? 'none' : 'block';"
+    )
 
     return f"""
     <div class="pv-card">
@@ -78,9 +82,11 @@ def _player_card_html(card: dict) -> str:
                  onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
             <div class="pv-badge-fallback" style="display:none; background:{fallback_color};"></div>
             {armband}
-            <span class="pv-flag-dot" style="background:{flag_color};" title="{tooltip}"></span>
+            <span class="pv-flag-dot" style="background:{flag_color};" title="{tooltip}"
+                  onclick="{toggle_js}"></span>
+            <div class="pv-flag-popover">{tooltip}</div>
         </div>
-        <div class="pv-name">{card['name']}</div>
+        <div class="pv-name"><span class="pv-pos">{card['position']}</span>{card['name']}</div>
         <div class="{points_class}">{points_display}</div>
     </div>
     """
@@ -196,6 +202,25 @@ PITCH_CSS = """
     position: absolute; bottom: -2px; right: -2px;
     width: 12px; height: 12px; border-radius: 50%;
     border: 1.5px solid white;
+    cursor: pointer;
+}
+.pv-flag-dot::after {
+    content: ''; position: absolute; inset: -9px;
+}
+.pv-flag-popover {
+    display: none;
+    position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+    margin-top: 6px; width: max-content; max-width: 180px;
+    background: #2B2B45; color: white;
+    font-family: 'Space Grotesk', sans-serif; font-size: 11px; font-weight: 500;
+    line-height: 1.35; padding: 6px 8px; border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    z-index: 20; text-align: left;
+}
+.pv-flag-popover::before {
+    content: ''; position: absolute; bottom: 100%; left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent; border-bottom-color: #2B2B45;
 }
 .pv-name {
     font-family: 'Space Grotesk', sans-serif; font-size: 12px; font-weight: 600;
@@ -203,12 +228,16 @@ PITCH_CSS = """
     padding: 1px 6px; margin-top: 4px; white-space: nowrap;
     max-width: 76px; overflow: hidden; text-overflow: ellipsis;
 }
+.pv-pos {
+    color: #B8B5E8; font-weight: 500; margin-right: 3px;
+}
 .pv-points {
     font-family: 'Space Grotesk', sans-serif; font-size: 12px; font-weight: 700;
     color: #FFD400; margin-top: 2px;
 }
 .pv-points-captain {
-    font-size: 16px; color: #E90052; text-shadow: 0 0 4px rgba(255,255,255,0.6);
+    font-size: 14px; color: #FFD400; background: #E90052;
+    border-radius: 4px; padding: 1px 6px;
 }
 .pv-bench-strip .pv-name { color: #2B2B45; background: transparent; }
 .pv-bench-strip .pv-points { color: #534AB7; }

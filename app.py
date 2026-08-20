@@ -35,21 +35,31 @@ DATA_DIR = Path(__file__).parent / "data"
 
 # Theme colors/font live in .streamlit/config.toml (Streamlit's own [theme]
 # section) - this block only adds what config.toml can't do declaratively:
-# real :hover states. Streamlit's tab buttons render via BaseWeb
-# ([data-baseweb="tab"]) - not a documented/stable public API, so this is
-# the one place in the app that could break on a Streamlit upgrade; if
-# tabs stop highlighting on hover after a version bump, this selector is
+# real :hover states, and the active-tab fill. Streamlit's tab internals
+# aren't a documented/stable public API - they already broke once (was
+# button[data-baseweb="tab"], silently stopped matching after a version
+# bump). Currently div[data-testid="stTab"] with role="tab" and
+# aria-selected="true"/"false", confirmed by inspecting the deployed app's
+# actual DOM. If tabs stop highlighting again after a future Streamlit
+# upgrade, re-inspect the live DOM rather than guess a selector - this is
 # the first place to check.
 st.markdown("""
 <style>
-button[data-baseweb="tab"] {
+div[data-testid="stTab"] {
     transition: background-color 0.15s ease, color 0.15s ease;
     border-radius: 8px 8px 0 0;
+    cursor: pointer;
 }
-button[data-baseweb="tab"]:hover {
+div[data-testid="stTab"]:hover {
     background-color: #534AB7 !important;
 }
-button[data-baseweb="tab"]:hover p {
+div[data-testid="stTab"]:hover p {
+    color: #FFFFFF !important;
+}
+div[data-testid="stTab"][aria-selected="true"] {
+    background-color: #534AB7 !important;
+}
+div[data-testid="stTab"][aria-selected="true"] p {
     color: #FFFFFF !important;
 }
 div[data-testid="stMetric"] {
