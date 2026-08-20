@@ -4,6 +4,48 @@ This is a working repo, not a blank slate — read the code before planning
 anything, especially `squad_optimizer.py`, `match_model.py`, and
 `multi_week_planner.py`. The README's "Known issues" section is accurate.
 
+## backtest_multi_week_planner.py (2026-08-20 session)
+
+Priority 4. Closed the gap flagged in this file's own "multi_week_planner
+re-verification" section above: no persisted, re-runnable backtest
+existed for `multi_week_planner.py`/`multi_week_projections.py`, unlike
+every other model in this repo - the original "tested against real
+2022-23 DGWs" claim was ad-hoc and never saved. `src/backtest_multi_week_planner.py`
+is that script now, run for real against GW18-26 of 2022-23 (the World
+Cup fixture-congestion window) - **ALL CHECKS PASSED**, exit code 0:
+
+1. A real double-gameweek club (Chelsea, GW19; Man City, GW20) projects
+   HIGHER than its own single-fixture baseline that week - confirmed
+   against real fixtures.csv data, not assumed.
+2. A real blank-gameweek club (Brentford, GW25) projects EXACTLY ZERO
+   that week.
+3. The full multi-week ILP solves to Optimal across the whole horizon -
+   no crash, no infeasibility.
+4. Squad composition (15 players, position quotas, ≤3-per-club) stays
+   valid every single week of the resulting plan.
+
+**Deliberately not a points-model accuracy backtest**: 2022-23 is one of
+`points_model.pkl`'s own training seasons (`train_points_model.py`'s
+`TRAIN_SEASONS`), so treating it as held-out for point predictions would
+be data leakage. Uses a model-independent points proxy instead (each
+player's own trailing, backward-looking actual points-per-game that
+season) - isolates what's actually being tested: does the *planner*
+handle a real DGW/blank calendar correctly, not whether some point
+estimate is accurate. `match_model.pkl` is still used for its fixture-
+difficulty *scaling* role (relative multiplier, not a target prediction)
+- same role it already plays, unflagged for leakage, in
+`backtest_squad_optimizer.py`.
+
+**Explicit, stated gap, not silently dropped**: chip timing isn't
+re-validated here. No chip-eligibility-window data exists for a
+historical season in the vaastav CSVs (that's live FPL account/season
+metadata, not part of the historical dumps) - rather than guess plausible
+windows, this runs with `chip_windows={}` and checks transfer/budget/
+DGW/blank correctness only. The original ad-hoc test's "sensible chip
+timing" was always just an impression, never itself checked against
+ground truth - that's still true, just now written down instead of
+implied.
+
 ## Overall rank display (2026-08-20 session)
 
 Priority 3. Confirmed the exact field against a live response rather than
