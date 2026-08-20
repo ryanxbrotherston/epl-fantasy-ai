@@ -48,6 +48,12 @@ def plan(
     chip_windows: dict,
     chips_already_used: set,  # chip instance ids already burned this season
     team_of: dict,  # {player_id: team_name} for club-limit constraints
+    time_limit: float | None = None,  # seconds - a bounded safety net, not a substitute for
+                                       # keeping the candidate pool small (see app.py's
+                                       # solve_transfer_plan(), which filters projection_table
+                                       # before this ever gets called) - CBC can still return its
+                                       # best feasible solution so far rather than the proven
+                                       # optimum if this is hit; see the sol_status note below.
 ):
     prob = pulp.LpProblem("multi_week_fpl_plan", pulp.LpMaximize)
     players = projection_table["id"].tolist()
@@ -176,14 +182,29 @@ def plan(
             + [triple_capt.get((cid, gw), 0) for cid in chip_windows if chip_windows[cid]["name"] == "3xc"]
         ) <= 1
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=time_limit))
     status = pulp.LpStatus[prob.status]
-    if status != "Optimal":
+    # CBC/PuLP quirk, confirmed empirically (not assumed from docs): when a
+    # timeLimit cuts the solve short but CBC still has a feasible incumbent,
+    # prob.status stays "Optimal" - that field alone can't distinguish a
+    # proven-optimal solve from a truncated-but-usable one. prob.sol_status
+    # is the real signal (pulp/apis/coin_api.py's get_status(): CBC's own
+    # solution-file header "Stopped on time - objective value X" maps to
+    # LpSolutionIntegerFeasible, not LpSolutionOptimal). Only genuinely
+    # unusable outcomes (infeasible, unbounded, or a time-out with no
+    # feasible solution at all) raise; a truncated-but-feasible one is
+    # still returned; app.py's caller discloses that to the user rather
+    # than presenting it with the same confidence as a converged solve.
+    if status not in ("Optimal",) or prob.sol_status not in (
+        pulp.LpSolutionOptimal, pulp.LpSolutionIntegerFeasible,
+    ):
         raise RuntimeError(f"Solver status: {status} - horizon/constraints may be infeasible")
 
-    return _extract_plan(gameweeks, players, projection_table, squad, starting, captain,
-                          transfer_in, transfer_out, wildcard, freehit, bboost, triple_capt,
-                          hits, free_transfers_avail)
+    plan_df = _extract_plan(gameweeks, players, projection_table, squad, starting, captain,
+                             transfer_in, transfer_out, wildcard, freehit, bboost, triple_capt,
+                             hits, free_transfers_avail)
+    plan_df.attrs["proven_optimal"] = prob.sol_status == pulp.LpSolutionOptimal
+    return plan_df
 
 
 def _extract_plan(gameweeks, players, projection_table, squad, starting, captain,

@@ -666,6 +666,33 @@ def estimate_chips_used(team_id: int, chip_windows: dict) -> set:
         return set()
 
 
+CANDIDATE_POOL_TOP_N_PER_POSITION = 40  # generous multiple of squad_optimizer's own quotas
+                                          # (GK:2/DEF:5/MID:5/FWD:3) - plenty of real transfer-target
+                                          # diversity while sharply cutting the ILP's variable count.
+                                          # An unfiltered solve (all ~567 players) measured ~3.5min
+                                          # locally, with unknown headroom on Streamlit Community
+                                          # Cloud's free-tier CPU/RAM - not verified against the
+                                          # actual deployed app, so this plus SOLVE_TIME_LIMIT_SECONDS
+                                          # below are both real mitigations, not just UI disclosure.
+SOLVE_TIME_LIMIT_SECONDS = 90  # bounded safety net ON TOP OF the pool filter above, not instead of
+                                # it - CBC returns its best feasible solution so far if this is hit
+                                # without having proven optimality; render_transfer_advice() discloses
+                                # that rather than presenting a truncated solve with full confidence.
+
+
+def filter_candidate_pool(preds_all: pd.DataFrame, current_squad_ids: set,
+                           top_n: int = CANDIDATE_POOL_TOP_N_PER_POSITION) -> pd.DataFrame:
+    """Top-N predicted_points per position, PLUS the user's own current squad
+    regardless of rank - the squad must stay fully selectable no matter where
+    its players land in the ranking, or the solver could be forced into
+    recommending a sell it was never actually allowed to keep."""
+    keep_ids = set(current_squad_ids)
+    for pos in ["GK", "DEF", "MID", "FWD"]:
+        pos_pool = preds_all[preds_all["position"] == pos].nlargest(top_n, "predicted_points")
+        keep_ids |= set(pos_pool["id"])
+    return preds_all[preds_all["id"].isin(keep_ids)]
+
+
 @st.cache_data(ttl=1800)
 def solve_transfer_plan(squad_ids_tuple: tuple, bank: int, free_transfers: int, target_event: int,
                          team_id: int, _bootstrap: dict, _all_players: pd.DataFrame) -> pd.DataFrame:
@@ -676,6 +703,9 @@ def solve_transfer_plan(squad_ids_tuple: tuple, bank: int, free_transfers: int, 
     convention as the other cached loaders above."""
     base = load_base_predictions()
     preds_all = refresh_predictions_with_live_data(base, _bootstrap)
+    squad_ids = set(squad_ids_tuple)
+    preds_all = filter_candidate_pool(preds_all, squad_ids)
+
     bundle = load_match_model_bundle()
     avg_lambda = load_league_avg_lambda(bundle, tuple(t["name"] for t in _bootstrap["teams"]))
     fixtures_df = load_fixtures_df(_bootstrap)
@@ -689,8 +719,9 @@ def solve_transfer_plan(squad_ids_tuple: tuple, bank: int, free_transfers: int, 
     chips_already_used = estimate_chips_used(team_id, chip_windows)
 
     return multi_week_planner.plan(
-        projection_table, gameweeks, set(squad_ids_tuple), bank, free_transfers,
+        projection_table, gameweeks, squad_ids, bank, free_transfers,
         chip_windows, chips_already_used, team_of,
+        time_limit=SOLVE_TIME_LIMIT_SECONDS,
     )
 
 
@@ -713,12 +744,13 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
         st.session_state[f"{key_prefix}_show_plan"] = True
 
     if not st.session_state.get(f"{key_prefix}_show_plan"):
-        st.caption("This solves an ILP over the whole player pool across 5 gameweeks - measured at "
-                   "~3-4 minutes on a real run, not a quick lookup. Cached for 30 minutes afterward, "
-                   "so repeated views don't re-solve.")
+        st.caption("Solves an ILP over a filtered candidate pool (top predicted-points players per "
+                   "position, plus your own squad) across 5 gameweeks, bounded to "
+                   f"{SOLVE_TIME_LIMIT_SECONDS}s - not a quick lookup. Cached for 30 minutes "
+                   "afterward, so repeated views don't re-solve.")
         return
 
-    with st.spinner("Solving the next 5 gameweeks - this genuinely takes a few minutes, not stuck..."):
+    with st.spinner(f"Solving the next 5 gameweeks (bounded to {SOLVE_TIME_LIMIT_SECONDS}s)..."):
         try:
             plan_df = solve_transfer_plan(
                 tuple(sorted(picks_df["element"])), int(history.get("bank", 0)), int(free_transfers),
@@ -727,6 +759,11 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
         except Exception as e:
             st.error(f"Couldn't build a transfer plan right now: {e}")
             return
+
+    if not plan_df.attrs.get("proven_optimal", True):
+        st.warning(f"The solver hit its {SOLVE_TIME_LIMIT_SECONDS}s time limit before proving this "
+                   "is the best possible plan - it's the best one found in time, not a converged "
+                   "solution. Treat it as a strong candidate, not a certainty.")
 
     this_week = plan_df.iloc[0]
     if this_week["transfers_in"]:
