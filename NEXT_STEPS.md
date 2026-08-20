@@ -6,11 +6,42 @@ anything, especially `squad_optimizer.py`, `match_model.py`, and
 
 ## Immediate blocker
 
-GW1 deadline is imminent. Until Ryan has created the real AI-run FPL account
+GW1 deadline is imminent (2026-08-21T17:30:00Z UTC — confirmed live from
+bootstrap-static tonight). Until Ryan has created the real AI-run FPL account
 and submitted a squad (using the AI Team tab's recommendation), nothing
 downstream — the monitor, the "locked/live" AI Team mode, transfer planning —
 has a real account to operate on. Don't build further on the assumption an
 account exists; confirm it does first.
+
+## Deployment prep (2026-08-20 session) — pushed, rest needs Ryan directly
+
+Priority 3 tonight, as far as it could go without Ryan present:
+
+- **Pushed to GitHub**: `origin/main` is now current (was 2 commits behind).
+  Confirmed no secrets in the diff (`.streamlit/secrets.toml` is already
+  gitignored) before pushing.
+- **`.github/workflows/ai_monitor.yml` reviewed**: correctly wired to read
+  `AI_TEAM_ID`/`ALERT_EMAIL_*` from GitHub Actions secrets, on an hourly
+  cron plus manual `workflow_dispatch`. Nothing to fix here — it's ready,
+  just unconfigured.
+- **Streamlit Community Cloud connection, and setting secrets in both
+  places, could NOT be done tonight** — genuinely blocked, not skipped:
+  1. No browser automation was available in this session (the Chrome
+     extension wasn't connected), and connecting Streamlit Cloud requires
+     an interactive GitHub-OAuth login at share.streamlit.io — nothing to
+     script around that.
+  2. `AI_TEAM_ID` doesn't exist yet — it's the ID of the real AI-run FPL
+     account, which per the "Immediate blocker" above hasn't been created.
+  3. `ALERT_EMAIL_APP_PASSWORD` doesn't exist yet either — needs Ryan to
+     turn on 2FA and generate a Gmail App Password himself
+     (myaccount.google.com/apppasswords); this isn't something that should
+     ever be typed into anything but Ryan's own Google account flow.
+  **What's left, exactly** (see README's "Setup for the email alerts"
+  section for the full steps): create the AI account and submit its GW1
+  squad → generate the Gmail App Password → add all four secrets in GitHub
+  repo Settings → Secrets and variables → Actions → New repository secret
+  → connect share.streamlit.io to this repo → add `AI_TEAM_ID` again in
+  Streamlit Cloud's own separate secrets manager (App settings → Secrets).
 
 ## What's built and backtested (as of this handoff)
 
