@@ -66,9 +66,9 @@ def flag_problem_players(picks_df: pd.DataFrame) -> pd.DataFrame:
     threshold, and are in the starting XI (multiplier > 0, i.e. not benched)."""
     starting = picks_df[picks_df["multiplier"] > 0].copy()
     hard_out = starting["status"].isin(UNAVAILABLE_STATUSES)
-    # chance_of_playing_next_round comes through fpl_api merges as part of the
-    # players table when available; guard for its absence
-    return starting[hard_out]
+    chance = pd.to_numeric(starting.get("chance_of_playing_next_round"), errors="coerce")
+    doubtful = starting["status"].eq("d") & chance.notna() & (chance < DOUBTFUL_THRESHOLD)
+    return starting[hard_out | doubtful]
 
 
 def suggest_replacement(problem_player: pd.Series, squad_ids: set, bank: int,
@@ -158,9 +158,10 @@ def main():
             continue
 
         replacement = suggest_replacement(problem, squad_ids, bank, all_players, team_limit_counts)
-        status_label = {"i": "INJURED", "s": "SUSPENDED", "u": "UNAVAILABLE", "n": "NOT IN SQUAD"}.get(
-            problem["status"], problem["status"]
-        )
+        status_label = {
+            "i": "INJURED", "s": "SUSPENDED", "u": "UNAVAILABLE", "n": "NOT IN SQUAD",
+            "d": f"DOUBTFUL ({problem.get('chance_of_playing_next_round')}% chance)",
+        }.get(problem["status"], problem["status"])
 
         if replacement is not None:
             lines.append(

@@ -189,13 +189,58 @@ weighted seasons, just doesn't show the low-score correlation the original
 the backtest (it's not wired into the live app yet), so this was a
 contained, low-risk change.
 
+## Live API sanity check (2026-08-20 session)
+
+Priority 1 tonight. This machine (unlike the sandbox that built the live
+layer) can actually reach `fantasy.premierleague.com` — ran every live call
+for real, no mocking:
+
+- `bootstrap-static/`: 200 OK, 595 elements, 38 events. `current_gameweek()`
+  correctly falls to `is_next` (GW1, deadline 2026-08-21T17:30:00Z — the
+  season hasn't started yet, confirmed via `current`/`is_current` both False
+  as expected pre-deadline).
+- `entry/{id}/`, `entry/{id}/history/`, `fixtures/?event=1`,
+  `element-summary/{id}/`: all confirmed against real IDs, schema matches
+  what the code assumes. Invalid team IDs return `None` cleanly (no crash).
+- `entry/{id}/event/{gw}/picks/`: correctly returns `None` (404) for every
+  team right now, because GW1 hasn't happened yet — there are no picks to
+  read anywhere in the live API yet, for anyone. This is real pre-season
+  state, not a bug. **Re-confirm this specific endpoint once GW1 has
+  actually been played** — it's the one call that couldn't be exercised
+  with real data tonight.
+- `ict_index`/`threat`/`creativity`/`influence` are indeed quoted strings on
+  live data, confirming the bug the previous session caught defensively —
+  `pd.to_numeric(..., errors="coerce")` in `live_rolling_features.py` and
+  `ai_team_monitor.py` handles it correctly, zero coercion failures.
+- `ai_team_monitor.py` ran end-to-end (`AI_TEAM_ID=1 python
+  src/ai_team_monitor.py`) against live data and printed the correct
+  pre-deadline message without error. Email sending itself wasn't exercised
+  (no real Gmail App Password in this session) — untested still.
+- `app.py` boots under real `streamlit run` and serves HTTP 200 against live
+  data. Couldn't visually drive the tabs — no browser automation available
+  in this session — but every underlying live-data call the UI makes
+  (`current_gameweek`, `team_picks_dataframe`, `get_entry`) was exercised
+  directly above.
+
+**Real bug found and fixed**: `ai_team_monitor.flag_problem_players()`
+declared `DOUBTFUL_THRESHOLD = 50` and its docstring claimed doubtful
+players below that threshold get flagged, but the code never actually
+checked `chance_of_playing_next_round` — and `fpl_api.team_picks_dataframe()`
+didn't even carry that column through its merge, so there was nothing to
+check. Confirmed live: 28 players currently have status `'d'` (doubtful),
+24 at 75% (correctly fine) and 2 at 25% (should have been flagged, weren't).
+Fixed both — merge now includes `chance_of_playing_next_round`, and
+`flag_problem_players` actually applies the threshold. Verified against
+live data: the 2 sub-50% players are now flagged, the 24 at 75% still
+aren't. No live squad exists yet to regression-test this against a real
+alert email (GW1 hasn't happened), so re-confirm once the AI account has a
+real squad and a real doubtful player shows up.
+
 ## Priority order for what's next
 
-1. **Sanity-check the live layer for real.** `fpl_api.py`, `ai_team_monitor.py`,
-   and `live_rolling_features.py` are all built and unit-tested against
-   mocked/schema-accurate data only. First real run should confirm:
-   bootstrap-static shape, entry/picks lookups, element-summary history,
-   and the email alert actually sending.
+1. **Sanity-check the live layer for real.** DONE above, except the picks
+   endpoint (blocked on GW1 actually happening) and the real email send
+   (blocked on Gmail App Password secrets being set).
 2. **Wire the multi-week planner into live data.** Currently tested against
    historical seasons only (2022-23's real double/blank gameweeks). Needs:
    `fpl_api`'s live entry (current squad, bank, free transfers),

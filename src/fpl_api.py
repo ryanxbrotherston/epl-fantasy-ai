@@ -113,7 +113,8 @@ def team_picks_dataframe(team_id: int, event: int, bootstrap: dict):
     picks = pd.DataFrame(picks_data["picks"])
     merged = picks.merge(
         players[["id", "web_name", "position", "team", "team_short", "now_cost",
-                  "form", "ep_next", "points_per_game", "status"]],
+                  "form", "ep_next", "points_per_game", "status",
+                  "chance_of_playing_next_round"]],
         left_on="element", right_on="id", how="left",
     )
     merged["role"] = merged.apply(
