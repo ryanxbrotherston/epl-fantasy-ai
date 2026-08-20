@@ -4,6 +4,143 @@ This is a working repo, not a blank slate — read the code before planning
 anything, especially `squad_optimizer.py`, `match_model.py`, and
 `multi_week_planner.py`. The README's "Known issues" section is accurate.
 
+## Predicted lineup integration (2026-08-20 session)
+
+Priority 2. Ryan wanted a real predicted-lineup source (team news/press
+conferences) instead of inferring starting likelihood purely from
+historical minutes, with the early-prediction/official-confirmation
+distinction preserved rather than collapsed into one signal. This took a
+long research path with several real dead ends worth recording so nobody
+re-treads them:
+
+**Sources checked and why each was rejected, in order:**
+- **Fantasy Football Scout** (the obvious, best-reputation source - real
+  editors tracking press conferences): ToS (`/terms-and-conditions`,
+  section 6.6) explicitly bans "mass, automated or systematic
+  extractions... or use it to create or include it within another...
+  electronic database" - exactly what an hourly automated pipeline is.
+  Ryan explicitly chose to proceed anyway understanding the risk, but the
+  actual page content turned out to be a second, independent blocker: the
+  real per-club predicted XI is a **pitch-graphic image with empty alt
+  text**, with only loose prose commentary around it - not machine-
+  parseable into a clean flag without fragile NLP/OCR. Superseded before
+  being built - see fpledits.com below.
+- **RotoWire**: ToS restricts to "personal, non-commercial use", bans
+  "reproduction... or creation of derivative works" - same category of
+  problem as FFS, not used.
+- **ESPN**: the specific article suggested was a one-off dated Week 1
+  piece, not a durable per-gameweek source with a discoverable URL
+  pattern - not viable for ongoing automation regardless of ToS.
+- **Fantasy Football Pundit**: actively protected by Cloudflare
+  bot-detection (confirmed: 403, `Server: cloudflare`, generic challenge
+  page). This is a hard line, not a judgment call - bypassing bot
+  detection is something this assistant won't build regardless of
+  instruction, so this source was never in play once that was found.
+- **API-Football**: real, documented API with an explicit
+  `lineup_confirmed` field - exactly the predicted/confirmed distinction
+  wanted. But its **free tier has no access to the current season at
+  all** - confirmed live with a real key (`"Free plans do not have access
+  to this season, try from 2022 to 2024"`), and confirmed this isn't a
+  pre-season quirk (2025, a fully-completed past season, is *also*
+  blocked - it's a permanent rolling ~2-year paywall, not a timing issue).
+  Cheapest current-season tier: $19/month (Pro). Ryan chose not to pay for
+  this once a free alternative worked out (see below).
+- **LineupsLabs** and **fpledits.com's frontend pages**: both modern
+  client-rendered Next.js apps where the actual lineup data loads via an
+  in-browser fetch after page load, not present in the server-rendered
+  HTML or the RSC payload (confirmed by inspecting both directly -
+  LineupsLabs' own payload literally ships `"initialLeagueData":
+  {"7":{"gameweeks":[]}}`, an empty placeholder). No browser access this
+  session to inspect the real network request. Guessing conventional
+  `/api/...` paths on LineupsLabs came back 404 across the board -
+  stopped there rather than keep guessing, consistent with the "don't
+  guess a URL" discipline this whole exercise was under. Ryan found
+  fpledits.com's actual endpoint himself via his own browser's devtools
+  Network tab - see below.
+
+**What actually shipped**: `https://fpledits.com/api/predicted-lineup/1`
+- a real, public, unauthenticated, structured JSON API returning all 20
+clubs' predicted starting XIs in one request. ToS checked (`/terms`, RSC-
+fetched since this site is also client-rendered for most pages but this
+one's SSR'd): only prohibits "misuse, disruption, or unauthorized access"
+- nothing restricting reading a public, intentionally-served endpoint.
+`robots.txt` doesn't exist (404) - no crawl restriction either.
+
+**Real data-quality bug found and worked around, not silently trusted**:
+the endpoint's own `teamId`/`teamName` fields are stale, referencing an
+old season's 20-club list (e.g. `teamId: 3` is labeled "Burnley", `19` is
+"West Ham", `20` is "Wolves" - none of which are in the real current
+2026-27 Premier League; the real current clubs in those slots are
+Coventry City, Hull City, and Ipswich Town per FPL's own live
+bootstrap-static). Verified this wasn't just a labeling issue by
+cross-checking the actual player `id`s inside each mislabeled team's
+`selectedLineup` against live bootstrap-static: every single player id
+resolved correctly to their real current club (e.g. the "Burnley" entry's
+11 players are, individually, Bournemouth's actual current squad).
+`lineup_predictor.py` therefore **ignores `teamId`/`teamName` entirely**
+and joins every player by FPL element id instead - sidesteps the bug
+completely rather than trusting a broken label.
+
+**A related endpoint, `/api/predicted-lineup/confirmed/1`, exists but
+returns 401** (auth/paid feature) - confirms fpledits.com does track the
+early/confirmed distinction internally, but the confirmed side isn't
+usable without an account. Given the cost/complexity already spent
+finding a working free source, Ryan chose to skip official
+~60-75-min-pre-kickoff team-sheet confirmation automation entirely for
+now, rather than pay for either this or API-Football's Pro tier. **This
+is a real, acknowledged gap**: `lineup_predictor.py`'s "confirmed" basis
+label currently only ever means "FPL's own official status field"
+(injured/suspended/unavailable - a real, official designation, just not
+the specific pre-kickoff-team-sheet kind originally asked for), never a
+literal official starting-XI confirmation. Worth revisiting if a free
+source turns up, or if the $19/mo or fpledits.com paid tier starts
+feeling worth it once there's a track record to justify it.
+
+**What's built**:
+- `src/lineup_predictor.py`: `fetch_predicted_starting_ids()` (the early
+  signal, with a documented None-on-failure contract so a source outage
+  is never silently treated as "everyone's benched") and
+  `starting_likelihood_flag()` (green/yellow/red per player, always
+  labeled with which basis - `confirmed`/`early`/`none` - produced it).
+- `app.py`: a "Starting?" column (🟢/🟡/🔴 + basis label) added to all
+  three tabs' squad tables (AI Team propose mode, AI Team locked/live
+  mode, My Team/Friends via the shared `render_team_lookup`), backed by a
+  15-minute Streamlit cache (shorter than the hour-long cache on
+  bootstrap/predictions, since this specific signal is meant to update
+  through the week).
+- `src/ai_team_monitor.py`: now checks the starting XI against the early
+  signal too, not just official status. Bench-likely players (in the
+  starting XI, no official status issue, but not in fpledits.com's
+  predicted XI) get their own alert-log dedup key and their own clearly
+  labeled email section ("EARLY WARNING - predicted only... could easily
+  change before kickoff"), kept visibly separate from the "CONFIRMED -
+  FPL's own official status" section for the pre-existing injury/
+  suspension checks. Verified end-to-end with a synthetic squad including
+  a real player (Saka) the source currently flags as bench-likely - both
+  sections rendered correctly, dedup keys correct
+  (`{element}_early_bench_likely` vs the existing `{element}_{status}`).
+- `src/lineup_prediction_log.py` + a new `fpl_api.get_event_live()`:
+  **backtesting this wasn't feasible** - fpledits.com only exposes its
+  latest snapshot, no historical archive, so there's nothing to backtest
+  against the way squad_optimizer.py/risk_analyzer.py's fixes were. Built
+  the honest alternative instead, per instructions: `ai_team_monitor.py`
+  now logs a snapshot of the predicted starting XI every hourly run
+  (overwriting the same gameweek's entry, so the log ends up holding
+  whatever was predicted closest to kickoff) and scores the *previous*
+  gameweek's snapshot against real per-gameweek `minutes` (via the new
+  `get_event_live()` - one request for the whole gameweek's actuals, not
+  one per player) once results are in. This builds a real, growing
+  accuracy track record over the season rather than a one-time claim -
+  **there is no accuracy number to report yet**, since GW1 hasn't been
+  played. `.github/workflows/ai_monitor.yml` updated to commit the two
+  new log files back to the repo alongside the existing alert log (same
+  reason: GitHub Actions runners don't persist anything otherwise).
+
+**Not done, explicit gaps**: official pre-kickoff team-sheet confirmation
+(see above - punted, not solved). Historical backtest of the early signal
+(not feasible, logging forward instead, explicitly said so rather than
+shipping an unvalidated number).
+
 ## Deployment status — CORRECTION (2026-08-20, later same day)
 
 The "Immediate blocker" and "Deployment prep" sections originally written

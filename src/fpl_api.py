@@ -67,6 +67,14 @@ def get_entry_transfers(team_id: int) -> list[dict]:
     return _get(f"entry/{team_id}/transfers/") or []
 
 
+def get_event_live(event: int) -> dict | None:
+    """Every player's stats for ONE specific gameweek (minutes, points,
+    bps, etc.) in a single request - much cheaper than calling
+    get_element_summary() per player when you need a whole gameweek's
+    worth of actuals at once. Returns None before that gameweek exists."""
+    return _get(f"event/{event}/live/")
+
+
 def get_element_summary(player_id: int) -> dict | None:
     """A single player's full fixture-by-fixture history this season plus
     upcoming fixtures - useful for the transfer-advice engine later."""

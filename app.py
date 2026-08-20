@@ -17,6 +17,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 import fpl_api
+import lineup_predictor
 from squad_optimizer import load_predictions, pick_squad, pick_starting_xi, BUDGET
 
 st.set_page_config(page_title="EPL Fantasy AI", page_icon="⚽", layout="wide")
@@ -36,6 +37,34 @@ def load_base_predictions():
     """The pre-trained model's blended predictions from our seed pipeline
     (run offline via src/build_gw1_features.py + src/squad_optimizer.py)."""
     return load_predictions()
+
+
+@st.cache_data(ttl=900)
+def load_predicted_starting_ids():
+    """The EARLY-prediction signal (fpledits.com's predicted lineups) -
+    15min cache since this is refreshed through the week as team news
+    develops, unlike the hourly-cached bootstrap/predictions above."""
+    return lineup_predictor.fetch_predicted_starting_ids()
+
+
+_FLAG_LABEL = {"green": "🟢", "yellow": "🟡", "red": "🔴", "unknown": "❔"}
+
+
+def add_starting_likelihood(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
+    """Adds a 'Starting?' column: an emoji flag plus whether it's based on
+    FPL's own official status or fpledits.com's early prediction - see
+    lineup_predictor.py and NEXT_STEPS.md for why these are kept distinct
+    rather than blended into one unlabeled signal."""
+    predicted_ids = load_predicted_starting_ids()
+    df = df.copy()
+
+    def _label(row):
+        result = lineup_predictor.starting_likelihood_flag(row[id_col], row["status"], predicted_ids)
+        basis = {"confirmed": "official", "early": "predicted", "none": "no data"}[result["basis"]]
+        return f"{_FLAG_LABEL[result['flag']]} ({basis})"
+
+    df["Starting?"] = df.apply(_label, axis=1)
+    return df
 
 
 def refresh_predictions_with_live_data(base_preds: pd.DataFrame, bootstrap: dict) -> pd.DataFrame:
@@ -70,6 +99,9 @@ def refresh_predictions_with_live_data(base_preds: pd.DataFrame, bootstrap: dict
 # ---------- sidebar: gameweek status ----------
 
 st.title("⚽ EPL Fantasy AI")
+st.caption("🟢/🟡/🔴 = starting likelihood. **(official)** = FPL's own status field. "
+           "**(predicted)** = fpledits.com's predicted lineup - a third-party guess, not "
+           "an official team sheet, refreshed through the week as team news develops.")
 
 try:
     bootstrap = load_bootstrap()
@@ -127,7 +159,7 @@ with tab_ai:
 
         st.markdown("##### Starting XI")
         st.dataframe(
-            xi[["web_name", "position", "now_cost", "predicted_points"]]
+            add_starting_likelihood(xi, "id")[["web_name", "position", "now_cost", "predicted_points", "Starting?"]]
             .assign(now_cost=lambda d: (d["now_cost"] / 10).map("£{:.1f}m".format))
             .rename(columns={"web_name": "Player", "position": "Pos", "now_cost": "Price", "predicted_points": "Pred pts"}),
             hide_index=True, use_container_width=True,
@@ -135,7 +167,7 @@ with tab_ai:
 
         st.markdown("##### Bench")
         st.dataframe(
-            bench[["web_name", "position", "now_cost", "predicted_points"]]
+            add_starting_likelihood(bench, "id")[["web_name", "position", "now_cost", "predicted_points", "Starting?"]]
             .assign(now_cost=lambda d: (d["now_cost"] / 10).map("£{:.1f}m".format))
             .rename(columns={"web_name": "Player", "position": "Pos", "now_cost": "Price", "predicted_points": "Pred pts"}),
             hide_index=True, use_container_width=True,
@@ -161,7 +193,8 @@ with tab_ai:
                 else:
                     picks_df, history = result
                     st.dataframe(
-                        picks_df[["web_name", "position", "team_short", "role", "now_cost", "ep_next"]]
+                        add_starting_likelihood(picks_df, "element")
+                        [["web_name", "position", "team_short", "role", "now_cost", "ep_next", "Starting?"]]
                         .assign(now_cost=lambda d: (d["now_cost"] / 10).map("£{:.1f}m".format))
                         .rename(columns={"web_name": "Player", "position": "Pos", "team_short": "Club",
                                           "role": "Role", "now_cost": "Price", "ep_next": "FPL's next-GW est."}),
@@ -204,7 +237,8 @@ def render_team_lookup(key_prefix: str, default_id: int | None = None):
     picks_df, history = result
     st.markdown(f"##### Gameweek {current_event} squad")
     st.dataframe(
-        picks_df[["web_name", "position", "team_short", "role", "now_cost", "ep_next"]]
+        add_starting_likelihood(picks_df, "element")
+        [["web_name", "position", "team_short", "role", "now_cost", "ep_next", "Starting?"]]
         .assign(now_cost=lambda d: (d["now_cost"] / 10).map("£{:.1f}m".format))
         .rename(columns={"web_name": "Player", "position": "Pos", "team_short": "Club",
                           "role": "Role", "now_cost": "Price", "ep_next": "FPL's next-GW est."}),

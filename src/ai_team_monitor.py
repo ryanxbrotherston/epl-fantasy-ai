@@ -10,11 +10,20 @@ whether anyone's looking at the site.
 What it does each run:
   1. Pulls the AI team's actual current squad from the live FPL API (its
      real Team ID - this is the source of truth, not anything we store).
-  2. Checks every player in that squad against live injury/availability status.
-  3. For anyone flagged (injured/suspended/unavailable/highly doubtful) who's
-     in the starting XI, computes a same-position replacement suggestion
-     within budget.
-  4. Emails Ryan the specific change to make, IF this exact issue hasn't
+  2. Checks every player in that squad against live injury/availability
+     status - FPL's own OFFICIAL designation (injured/suspended/
+     unavailable/highly doubtful), not a prediction.
+  3. Separately checks the starting XI against lineup_predictor.py's EARLY
+     signal (fpledits.com's predicted-lineup snapshot) - anyone who looks
+     bench-likely there but has no official status issue gets flagged too,
+     clearly labeled as an early/predicted warning, not an official one.
+     See NEXT_STEPS.md for why this doesn't also do official pre-kickoff
+     team-sheet confirmation (~60-75 min before kickoff) - every source
+     checked for that had a real blocker (ToS, bot-protection, no API, or
+     paid-only); that piece stays manual for now.
+  4. For anyone flagged in either category who's in the starting XI,
+     computes a same-position replacement suggestion within budget.
+  5. Emails Ryan the specific change to make, IF this exact issue hasn't
      already been alerted this gameweek (dedup via data/alert_log.json,
      committed back to the repo by the Action after each run).
 
@@ -39,6 +48,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 import fpl_api
+import lineup_predictor
+import lineup_prediction_log
 
 BASE = Path(__file__).resolve().parent.parent
 ALERT_LOG_PATH = BASE / "data" / "alert_log.json"
@@ -69,6 +80,32 @@ def flag_problem_players(picks_df: pd.DataFrame) -> pd.DataFrame:
     chance = pd.to_numeric(starting.get("chance_of_playing_next_round"), errors="coerce")
     doubtful = starting["status"].eq("d") & chance.notna() & (chance < DOUBTFUL_THRESHOLD)
     return starting[hard_out | doubtful]
+
+
+def flag_bench_likely_players(picks_df: pd.DataFrame, predicted_starting_ids: set | None) -> pd.DataFrame:
+    """Starting XI players who look bench-likely per the EARLY signal
+    (fpledits.com's predicted lineup) but have no official FPL status
+    issue - i.e. genuinely new information beyond flag_problem_players,
+    not a duplicate of it. Returns an empty frame if the early source was
+    unreachable this run (predicted_starting_ids is None) - a fetch
+    failure must never get silently treated as "everyone's benched"."""
+    starting = picks_df[picks_df["multiplier"] > 0].copy()
+    if predicted_starting_ids is None or starting.empty:
+        return starting.iloc[0:0]
+
+    already_flagged_ids = set(flag_problem_players(picks_df)["element"])
+    remaining = starting[~starting["element"].isin(already_flagged_ids)].copy()
+    if remaining.empty:
+        return remaining
+
+    flags = remaining.apply(
+        lambda r: lineup_predictor.starting_likelihood_flag(
+            r["element"], r["status"], predicted_starting_ids
+        ),
+        axis=1,
+    )
+    remaining["early_flag"] = [f["flag"] for f in flags]
+    return remaining[remaining["early_flag"] == "red"]
 
 
 def suggest_replacement(problem_player: pd.Series, squad_ids: set, bank: int,
@@ -127,6 +164,24 @@ def main():
     gw = fpl_api.current_gameweek(bootstrap)
     target_event = gw["id"]
 
+    # Snapshot the early signal + score last gameweek's snapshot against
+    # what actually happened, every hourly run, independent of whether the
+    # AI team has picks yet - this is what builds the "log accuracy going
+    # forward" track record over the season (see lineup_prediction_log.py -
+    # no historical archive exists to backtest against, so this is done
+    # forward instead, honestly, rather than shipping an unvalidated claim).
+    predicted_starting_ids = lineup_predictor.fetch_predicted_starting_ids()
+    if predicted_starting_ids is None:
+        print("Note: fpledits.com's early-prediction source was unreachable this run - "
+              "skipping the snapshot log and the early/bench-likely check this time.")
+    else:
+        lineup_prediction_log.log_snapshot(target_event)
+    if target_event > 1:
+        score = lineup_prediction_log.score_finished_gameweek(target_event - 1)
+        if score:
+            print(f"GW{target_event - 1} early-prediction accuracy: "
+                  f"{score['correct']}/{score['total']} ({score['accuracy']:.1%})")
+
     result = fpl_api.team_picks_dataframe(ai_team_id, target_event, bootstrap)
     if result is None:
         print(f"No picks available yet for GW{target_event} (pre-deadline, team not created, or "
@@ -137,8 +192,11 @@ def main():
     all_players = fpl_api.players_dataframe(bootstrap)
 
     problems = flag_problem_players(picks_df)
-    if problems.empty:
-        print(f"GW{target_event}: AI team's starting XI all clear. No alert needed.")
+    bench_likely = flag_bench_likely_players(picks_df, predicted_starting_ids)
+
+    if problems.empty and bench_likely.empty:
+        print(f"GW{target_event}: AI team's starting XI all clear (official status and "
+              f"early-prediction checks). No alert needed.")
         return
 
     alert_log = load_alert_log()
@@ -152,6 +210,8 @@ def main():
     new_issues = []
     lines = [f"GW{target_event} deadline: {gw['deadline_time']}\n"]
 
+    if not problems.empty:
+        lines.append("=== CONFIRMED - FPL's own official status ===")
     for _, problem in problems.iterrows():
         issue_key = f"{problem['element']}_{problem['status']}"
         if issue_key in already_alerted:
@@ -173,6 +233,31 @@ def main():
             lines.append(
                 f"• {problem['web_name']} ({status_label}) — no budget-feasible same-position "
                 f"replacement found within your bank (£{bank/10:.1f}m). Manual look needed."
+            )
+        new_issues.append(issue_key)
+
+    if not bench_likely.empty:
+        lines.append("\n=== EARLY WARNING - predicted only, from fpledits.com's predicted "
+                      "lineups, NOT an official team sheet - could easily change before "
+                      "kickoff ===")
+    for _, bench_player in bench_likely.iterrows():
+        issue_key = f"{bench_player['element']}_early_bench_likely"
+        if issue_key in already_alerted:
+            continue
+
+        replacement = suggest_replacement(bench_player, squad_ids, bank, all_players, team_limit_counts)
+        if replacement is not None:
+            lines.append(
+                f"• {bench_player['web_name']} (not in the predicted starting XI) — consider "
+                f"transferring IN {replacement['web_name']} (£{replacement['now_cost']/10:.1f}m, "
+                f"{replacement['team_name']}) - but this is an early prediction, not confirmed. "
+                f"Worth a second check closer to the deadline before acting."
+            )
+        else:
+            lines.append(
+                f"• {bench_player['web_name']} (not in the predicted starting XI) — no "
+                f"budget-feasible same-position replacement found within your bank "
+                f"(£{bank/10:.1f}m). This is an early prediction, not confirmed."
             )
         new_issues.append(issue_key)
 

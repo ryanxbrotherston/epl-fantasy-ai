@@ -31,14 +31,19 @@ jobs:
           ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
         run: python src/ai_team_monitor.py
 
-      - name: Commit updated alert log (if changed)
+      - name: Commit updated logs (if changed)
         run: |
           git config user.name "ai-team-monitor"
           git config user.email "actions@github.com"
-          if [ -f data/alert_log.json ]; then
-            git add data/alert_log.json
-            git diff --staged --quiet || git commit -m "Update alert log [skip ci]"
-            git push || true
-          else
-            echo "No alert log file yet (nothing flagged this run) - nothing to commit."
-          fi
+          # alert_log.json: injury/suspension/bench-likely alert dedup.
+          # lineup_prediction_snapshots.json + lineup_prediction_accuracy.json:
+          # lineup_prediction_log.py's ongoing "log accuracy going forward"
+          # track record for the early-prediction signal - these need
+          # committing back too, same reason as alert_log.json (GitHub
+          # Actions runners are fresh containers every run, nothing persists
+          # otherwise).
+          for f in data/alert_log.json data/lineup_prediction_snapshots.json data/lineup_prediction_accuracy.json; do
+            [ -f "$f" ] && git add "$f"
+          done
+          git diff --staged --quiet || git commit -m "Update monitor logs [skip ci]"
+          git push || true
