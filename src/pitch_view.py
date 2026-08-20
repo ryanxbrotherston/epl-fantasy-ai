@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import team_visuals
 
-FLAG_COLOR = {"green": "#2ECC71", "yellow": "#F5C518", "red": "#E63946", "unknown": "#9CA3AF"}
+FLAG_COLOR = {"green": "#34D399", "yellow": "#FBBF24", "red": "#F87171", "unknown": "#4B5063"}
 POSITION_ORDER = ["GK", "DEF", "MID", "FWD"]
 
 
@@ -70,21 +70,30 @@ def _player_card_html(card: dict) -> str:
         points_class += " pv-points-captain"
 
     tooltip = f"{card['basis']}: {card['detail']}"
-    toggle_js = (
-        "var p=this.nextElementSibling; "
-        "p.style.display = (p.style.display === 'block') ? 'none' : 'block';"
-    )
 
+    # <details>/<summary> instead of an onclick handler: confirmed live
+    # (2026-08-21) that Streamlit's st.markdown(unsafe_allow_html=True)
+    # runs content through a bundled DOMPurify before rendering, which
+    # strips onclick/onerror and every other inline event-handler attribute
+    # unconditionally (checked in a real browser - a JS-dispatched click on
+    # a span with onclick="..." did nothing; getAttribute('onclick') came
+    # back null even though the source string clearly had it). No amount of
+    # HTML formatting works around that - it's attribute-level stripping,
+    # not a parsing quirk. <details>/<summary> is a native tap-to-toggle
+    # disclosure widget requiring zero JS, so there's nothing for the
+    # sanitizer to strip - confirmed working (open/close on tap) in the
+    # same live check.
     return f"""
     <div class="pv-card">
         <div class="pv-badge-wrap">
-            <img src="{badge_url}" class="pv-badge"
-                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+            <div class="pv-badge-ring"></div>
+            <img src="{badge_url}" class="pv-badge" />
             <div class="pv-badge-fallback" style="display:none; background:{fallback_color};"></div>
             {armband}
-            <span class="pv-flag-dot" style="background:{flag_color};" title="{tooltip}"
-                  onclick="{toggle_js}"></span>
-            <div class="pv-flag-popover">{tooltip}</div>
+            <details class="pv-flag-details" title="{tooltip}">
+                <summary class="pv-flag-dot" style="background:{flag_color};"></summary>
+                <div class="pv-flag-popover">{tooltip}</div>
+            </details>
         </div>
         <div class="pv-name"><span class="pv-pos">{card['position']}</span>{card['name']}</div>
         <div class="{points_class}">{points_display}</div>
@@ -132,36 +141,44 @@ def render_pitch(xi_cards: list[dict], bench_cards: list[dict]) -> str:
 
 PITCH_CSS = """
 <style>
+:root {
+    --pv-bg: #0B0D14; --pv-panel-elevated: #171A28; --pv-border: rgba(255,255,255,0.06);
+    --pv-turf-a: #14261C; --pv-turf-b: #1B3226;
+    --pv-text-primary: #F2F3F7; --pv-text-secondary: #8A8FA3; --pv-text-tertiary: #565B70;
+    --pv-green: #34D399; --pv-amber: #FBBF24; --pv-red: #F87171; --pv-grey: #4B5063;
+    --pv-captain: #E8B84F; --pv-vice: #8B7FF0;
+}
 .pv-pitch {
     position: relative;
     width: 100%;
     aspect-ratio: 3 / 2.4;
     max-height: 640px;
-    border-radius: 12px;
+    border-radius: 14px;
     overflow: hidden;
     background: repeating-linear-gradient(
         to bottom,
-        #3E9B4F 0, #3E9B4F 12.5%,
-        #379046 12.5%, #379046 25%
+        var(--pv-turf-a) 0, var(--pv-turf-a) 12.5%,
+        var(--pv-turf-b) 12.5%, var(--pv-turf-b) 25%
     );
-    border: 3px solid #FFFFFF55;
+    box-shadow: inset 0 0 90px rgba(0,0,0,0.55), 0 8px 30px rgba(0,0,0,0.4);
+    border: 1px solid var(--pv-border);
     margin-bottom: 0.75rem;
 }
 .pv-halfway-line {
     position: absolute; left: 0; right: 0; top: 50%;
-    height: 2px; background: #FFFFFF88;
+    height: 1px; background: rgba(255,255,255,0.14);
 }
 .pv-center-circle {
     position: absolute; left: 50%; top: 50%;
     width: 14%; aspect-ratio: 1;
-    border: 2px solid #FFFFFF88; border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.14); border-radius: 50%;
     transform: translate(-50%, -50%);
 }
 .pv-penalty-box {
     position: absolute; left: 30%; width: 40%; height: 14%;
-    border: 2px solid #FFFFFF88; border-top: none;
+    border: 1px solid rgba(255,255,255,0.14); border-top: none;
 }
-.pv-penalty-box.pv-penalty-top { top: 0; border-top: none; border-bottom: 2px solid #FFFFFF88; border-top-width:0; }
+.pv-penalty-box.pv-penalty-top { top: 0; border-top: none; border-bottom: 1px solid rgba(255,255,255,0.14); border-top-width:0; }
 .pv-penalty-box.pv-penalty-bottom { bottom: 0; }
 .pv-formation-rows {
     position: absolute; inset: 6% 2%;
@@ -171,75 +188,86 @@ PITCH_CSS = """
     display: flex; justify-content: space-evenly; align-items: flex-start;
 }
 .pv-bench-label {
-    font-family: 'Space Grotesk', sans-serif; font-weight: 600;
-    color: #534AB7; margin: 0.5rem 0 0.25rem 0;
+    font-family: 'Space Grotesk', sans-serif; font-size: 10px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--pv-text-tertiary); margin: 0.5rem 0 0.5rem 2px;
 }
 .pv-bench-strip {
     display: flex; justify-content: flex-start; gap: 1.2rem; flex-wrap: wrap;
-    background: #EEEDFE; border-radius: 10px; padding: 0.75rem;
+    background: var(--pv-panel-elevated); border: 1px solid var(--pv-border);
+    border-radius: 10px; padding: 0.9rem 0.75rem;
 }
 .pv-card {
     display: flex; flex-direction: column; align-items: center;
     width: 78px; text-align: center;
 }
 .pv-badge-wrap { position: relative; width: 40px; height: 40px; }
-.pv-badge { width: 40px; height: 40px; object-fit: contain;
-            filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4)); }
+.pv-badge-ring {
+    position: absolute; inset: -3px; border-radius: 50%;
+    background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.12);
+}
+.pv-badge { width: 40px; height: 40px; object-fit: contain; position: relative; z-index: 1;
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); }
 .pv-badge-fallback {
     width: 40px; height: 40px; border-radius: 50%;
     align-items: center; justify-content: center;
+    position: relative; z-index: 1;
 }
 .pv-armband {
     position: absolute; top: -6px; right: -6px;
     width: 18px; height: 18px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
     font-family: 'Space Grotesk', sans-serif; font-size: 11px; font-weight: 700;
-    color: white; border: 1.5px solid white;
+    border: 1.5px solid var(--pv-bg); z-index: 2;
 }
-.pv-captain { background: #E90052; }
-.pv-vice { background: #534AB7; }
-.pv-flag-dot {
+.pv-captain { background: var(--pv-captain); color: #0B0D14; }
+.pv-vice { background: var(--pv-vice); color: white; }
+.pv-flag-details {
     position: absolute; bottom: -2px; right: -2px;
-    width: 12px; height: 12px; border-radius: 50%;
-    border: 1.5px solid white;
-    cursor: pointer;
 }
-.pv-flag-dot::after {
+.pv-flag-details summary {
+    width: 12px; height: 12px; border-radius: 50%;
+    border: 1.5px solid var(--pv-bg);
+    cursor: pointer;
+    list-style: none;  /* Firefox's default disclosure triangle */
+}
+.pv-flag-details summary::-webkit-details-marker {
+    display: none;  /* Chrome/Safari's default disclosure triangle */
+}
+.pv-flag-details summary::after {
     content: ''; position: absolute; inset: -9px;
 }
 .pv-flag-popover {
-    display: none;
     position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
     margin-top: 6px; width: max-content; max-width: 180px;
-    background: #2B2B45; color: white;
+    background: var(--pv-panel-elevated); color: var(--pv-text-primary);
+    border: 1px solid var(--pv-border);
     font-family: 'Space Grotesk', sans-serif; font-size: 11px; font-weight: 500;
     line-height: 1.35; padding: 6px 8px; border-radius: 6px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
     z-index: 20; text-align: left;
 }
 .pv-flag-popover::before {
     content: ''; position: absolute; bottom: 100%; left: 50%;
     transform: translateX(-50%);
-    border: 5px solid transparent; border-bottom-color: #2B2B45;
+    border: 5px solid transparent; border-bottom-color: var(--pv-panel-elevated);
 }
 .pv-name {
     font-family: 'Space Grotesk', sans-serif; font-size: 12px; font-weight: 600;
-    color: white; background: rgba(0,0,0,0.55); border-radius: 4px;
-    padding: 1px 6px; margin-top: 4px; white-space: nowrap;
+    color: var(--pv-text-primary); margin-top: 6px; white-space: nowrap;
     max-width: 76px; overflow: hidden; text-overflow: ellipsis;
 }
 .pv-pos {
-    color: #B8B5E8; font-weight: 500; margin-right: 3px;
+    color: var(--pv-text-tertiary); font-weight: 600; font-size: 10px; margin-right: 3px;
 }
 .pv-points {
-    font-family: 'Space Grotesk', sans-serif; font-size: 12px; font-weight: 700;
-    color: #FFD400; margin-top: 2px;
+    font-family: 'Space Grotesk', sans-serif; font-size: 12px; font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--pv-text-secondary); margin-top: 1px;
 }
 .pv-points-captain {
-    font-size: 14px; color: #FFD400; background: #E90052;
-    border-radius: 4px; padding: 1px 6px;
+    font-size: 13px; font-weight: 700;
+    color: var(--pv-captain);
 }
-.pv-bench-strip .pv-name { color: #2B2B45; background: transparent; }
-.pv-bench-strip .pv-points { color: #534AB7; }
 </style>
 """

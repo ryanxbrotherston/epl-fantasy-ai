@@ -1,7 +1,15 @@
 [theme]
-primaryColor = "#534AB7"
-backgroundColor = "#EEEDFE"
-secondaryBackgroundColor = "#FFFFFF"
-textColor = "#2B2B45"
+# Dark broadcast-sports-graphics direction (see design_concept.html, since
+# deleted once this shipped - the token comments below preserve where each
+# value came from). Apple.com-level polish isn't reachable on Streamlit's
+# native chrome (fixed DOM/behavior - already proved fragile once when a
+# Streamlit version bump silently broke the tab CSS, see app.py's tab-style
+# comment), so this only carries the palette as far as native chrome can
+# take it; the custom-rendered pitch view (pitch_view.py) is where the
+# quality bar is actually met.
+primaryColor = "#6C5CE8"          # --accent
+backgroundColor = "#0B0D14"       # --bg
+secondaryBackgroundColor = "#12141F"  # --panel
+textColor = "#F2F3F7"             # --text-primary
 font = "Space Grotesk:https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
 headingFont = "Space Grotesk:https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&display=swap"
