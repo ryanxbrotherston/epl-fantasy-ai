@@ -210,6 +210,47 @@ feeling worth it once there's a track record to justify it.
 (not feasible, logging forward instead, explicitly said so rather than
 shipping an unvalidated number).
 
+## BigBallsData evaluated and rejected for the confirmed-lineup gap (2026-08-20, later same night)
+
+Ryan asked to try `api.bigballsdata.com` (published July 2026, single
+maintainer, no track record - flagged as risky going in) to fill the
+official-confirmation gap left above. Verified before building anything
+on top of it, per instructions - **verification failed, nothing was
+wired in**.
+
+**What's real about it**: `/v1/matches` genuinely returns current-season
+EPL data - real current clubs (cross-checked against live FPL data from
+earlier tonight: Coventry City, Hull City, Ipswich Town, Sunderland all
+correctly present), correct GW1 kickoff dates. Auth works
+(`x-api-key`), ToS is clean (no restriction on automated polling - a
+normal commercial API meant to be polled), ratelimit headers confirm a
+genuine free-tier account.
+
+**What isn't real about it - the actual thing needed**: the lineups
+endpoint (`/v1/stored/matches/{id}/lineups`) returned `"available":
+false` for **100/100 recently-finished football matches** checked across
+every league they cover (mostly MLS, since football/EPL hasn't started
+yet) - not a plan/paywall issue (clean 200s, lineups marketed as
+free-tier), not a timing issue (these matches are *finished*, lineup data
+should unambiguously exist by now). The response schema itself is a
+second, independent red flag: `data.home`/`data.away` are typed as
+generic `{field: string, value: any}` pairs in their own OpenAPI spec -
+not a real player/position/status structure. Reads as a stubbed-out
+feature the marketing copy describes ahead of what's actually been built,
+not a working data source with a coverage gap.
+
+**Decision**: confirmed-lineup automation stays manual for now (FPL's own
+app shows this ~60-75 min pre-kickoff). The $19/mo API-Football Pro
+option (see "Predicted lineup integration" above - real, working,
+verified with a live key, just not free) is still sitting there if this
+becomes worth paying for later. Nothing from BigBallsData was wired into
+`ai_team_monitor.py` or anywhere else - no secrets added, no code
+changed. **If BigBallsData's lineups coverage is ever reconsidered**,
+re-check `/v1/stored/matches/{id}/lineups` against real *finished*
+matches first (not just upcoming ones) before assuming their coverage has
+caught up - that's the check that actually caught this, not the
+matches-data check, which looked fine.
+
 ## Deployment status — CORRECTION (2026-08-20, later same day)
 
 The "Immediate blocker" and "Deployment prep" sections originally written
