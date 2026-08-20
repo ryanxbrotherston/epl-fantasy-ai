@@ -251,6 +251,91 @@ matches first (not just upcoming ones) before assuming their coverage has
 caught up - that's the check that actually caught this, not the
 matches-data check, which looked fine.
 
+## Confirmed-lineup gap CLOSED: highlightly.net (2026-08-20, later still)
+
+After BigBallsData (rejected above) and football-data.org (checked live
+with a real key - legitimate service, but lineups require their paid
+"Deep Data" tier, €29/mo minimum - free tier confirmed to return no
+`lineups` key at all on a real finished match), Ryan found
+`api.bigballsdata.com`'s TypeScript SDK snippet and a `fields=lineups`
+query-param idea, neither of which changed anything (the SDK snippet only
+exercised `/v1/matches`, never touched `lineups`; `fields=lineups` isn't
+a real parameter - confirmed absent from BigBallsData's own OpenAPI spec,
+and silently ignored when tried live - also surfaced a second, worse data
+quality issue: a real Atlético Madrid vs Málaga fixture appeared twice
+with two different final scores, not just duplicate metadata like the
+earlier Hull City/Man Utd case). Then Ryan tried `highlightly.net`
+(`soccer.highlightly.net`) - **this one is real and is now wired in.**
+
+**Verified before building anything, same discipline as the rejected
+candidates**: `/matches` returns real current-season clubs (Hull City,
+Man City, Newcastle, Brentford, Ipswich, Brighton - all correct, no
+staleness). ToS is clean for this use case (personal app, not a
+competing database/reseller/gambling operation - all explicitly the only
+things it restricts). Critically, tested the actual thing needed against
+a real *finished* match (Leeds vs Everton, 2025-26 GW1) - not just an
+upcoming one, since that's the check that caught BigBallsData's stub -
+and got back genuine, richly-structured data: real players (Lucas Perri,
+Pascal Struijk, Joe Rodon, ...), positions, formation, a separate
+substitutes bench. Free tier includes lineups with no paywall (100
+req/day) - the first candidate tonight where lineups aren't gated behind
+a payment at all.
+
+**A genuinely useful property, not just "it works"**: there's no separate
+predicted mode. Tested against an unplayed GW1 fixture and got back an
+empty/`"Unknown"`-formation response - so presence of real data *is* the
+confirmation signal (per their docs, released ~30-40 min before kickoff,
+once clubs confirm it). No boolean field to misinterpret, unlike
+API-Football's `lineup_confirmed` flag design.
+
+**What shipped** (`src/confirmed_lineup.py`, wired into
+`ai_team_monitor.py` as a new third email section, "CONFIRMED - official
+team sheet (highlightly.net)", sitting between the existing official-FPL-
+status and early-fpledits-prediction sections in authority order):
+- Two identity mismatches handled rather than trusted blind: **team
+  names** differ from FPL's for 4 clubs (Man City/Manchester City, Man
+  Utd/Manchester United, Spurs/Tottenham, Nott'm Forest/Nottingham
+  Forest) - the mapping was built and verified by diffing both sources'
+  real live 20-club lists directly, not guessed; the other 16 match via
+  exact-string or substring comparison. **Player ids** are entirely
+  different schemes between the two services - matched by name instead
+  (first+second name, falling back to a surname/web_name check), with a
+  3-state result (confirmed starting / confirmed benched / no confident
+  match) specifically so a name-matching miss can never be mistaken for
+  "not started."
+- Rate-limit conscious by design: Highlightly's free tier is 100 req/day,
+  and lineups aren't released until ~30-40 min before kickoff anyway, so
+  polling every fixture every hour all week would waste the entire daily
+  budget on empty responses. Only checks a given fixture once it's within
+  2 hours of its own kickoff (`CONFIRMED_LOOKUP_WINDOW_HOURS`) - outside
+  that window, no Highlightly call happens at all, same as if the source
+  were unreachable.
+- Graceful fallback throughout: an unreachable/not-yet-released source,
+  an unmatched team, or an unmatched player all resolve to "no data for
+  this check right now," never to a false "not started" - the existing
+  two-tier system (official FPL status, then fpledits early prediction)
+  is completely unaffected if Highlightly has nothing to say.
+- Verified end-to-end with a synthetic squad exercising all three tiers
+  together in one run (an officially-injured player, a confirmed-benched
+  player via a faked imminent kickoff, and an early-warning-only player) -
+  each landed in exactly the right email section, with the early-warning
+  check correctly *not* re-flagging the confirmed-benched player.
+
+**Real gap in the codebase now, not the feature**: the API key needs to
+live in **GitHub Actions repository secrets**, not Streamlit Cloud's
+Secrets manager - `ai_team_monitor.py` runs via GitHub Actions on its own
+hourly cron, a completely separate secrets store from the Streamlit app
+(the same distinction that already applies to `AI_TEAM_ID`/
+`ALERT_EMAIL_*`). Ryan still needs to add `HIGHLIGHTLY_API_KEY` there
+before this actually fires in production - the code is ready and
+verified against live data, but unset until that secret exists.
+
+**Not yet re-confirmed**: the real end-to-end path (an actual GW1 fixture
+reaching its 2-hour pre-kickoff window, Highlightly having genuinely
+released a lineup, and the email firing correctly against real - not
+synthetic - squad data) hasn't happened yet, since GW1 hasn't kicked off
+as of this session. Worth a real check once it has.
+
 ## Deployment status — CORRECTION (2026-08-20, later same day)
 
 The "Immediate blocker" and "Deployment prep" sections originally written
