@@ -39,9 +39,25 @@ def build_test_season_rolling(season=TEST_SEASON) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = 0
     df["position"] = df["position"].replace({"GKP": "GK"})
+
+    # merged_gw.csv has two kinds of (element, GW) duplicates that both
+    # distort the rolling window if left in: exact duplicate rows (a
+    # data-file glitch) and genuine double gameweeks (two different fixture
+    # rows for the same player/GW, which should sum, not duplicate). Same
+    # fix as backtest_squad_optimizer.py/train_points_model.py - see
+    # NEXT_STEPS.md. Note: for a genuine double-GW row, team/opponent_team/
+    # was_home collapse to the first of the two fixtures (not summable) -
+    # goals_scored/assists (used as this backtest's actual-outcome labels)
+    # do get correctly summed across both, an approximation documented here
+    # rather than a full per-fixture redesign, since double gameweeks are rare.
+    df = df.drop_duplicates()
+    stat_cols = CORE_STATS + OPTIONAL_STATS
+    first_cols = [c for c in df.columns if c not in stat_cols + ["element", "GW"]]
+    df = df.groupby(["element", "GW"], as_index=False).agg(
+        {**{c: "sum" for c in stat_cols}, **{c: "first" for c in first_cols}}
+    )
     df = df.sort_values(["element", "GW"]).reset_index(drop=True)
 
-    stat_cols = CORE_STATS + OPTIONAL_STATS
     grouped = df.groupby("element")[stat_cols]
     shifted = grouped.shift(1)
     shifted["element"] = df["element"]

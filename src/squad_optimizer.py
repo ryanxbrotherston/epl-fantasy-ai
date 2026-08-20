@@ -59,9 +59,13 @@ UNAVAILABLE_STATUSES = {"i", "s", "u", "n"}
 # a linear correction (fit on actual-minus-predicted vs price, full 2025-26
 # season) to undo that. Backtested out-of-sample (correction fit on GW6-20,
 # evaluated fresh-pick-each-week on GW21-37, never seen during fitting):
-# +2.24 actual XI+captain points/GW on average (62.9 vs 60.7 baseline),
-# improved 10/17 held-out gameweeks. See backtest_squad_optimizer.py.
-PRICE_BIAS_CORRECTION = {"a": -0.776184, "b": 0.020478}
+# +1.59 actual XI+captain points/GW on average (59.06 vs 57.47 baseline),
+# improved 7/17 held-out gameweeks. See backtest_squad_optimizer.py.
+# (Refit 2026-08-20 after fixing merged_gw.csv's (element, GW) duplicate-row
+# distortion in points_model.pkl's training data - see NEXT_STEPS.md. The
+# fix changed the trained model's predictions, so this correction needed
+# refitting against it; previous constant was {"a": -0.776184, "b": 0.020478}.)
+PRICE_BIAS_CORRECTION = {"a": -0.578167, "b": 0.018724}
 
 
 def apply_price_bias_correction(df: pd.DataFrame) -> pd.DataFrame:

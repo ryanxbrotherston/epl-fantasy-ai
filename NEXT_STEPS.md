@@ -18,13 +18,16 @@ Everything below has real, honest metrics behind it — not vibes. See README
 and each script's docstring for the numbers and what they mean.
 
 - **Points model** (`train_points_model.py`): RandomForest, 6-season window,
-  recency-weighted. MAE 0.991 vs 1.042 naive baseline.
+  recency-weighted. MAE 1.012 vs 1.057 naive baseline (updated 2026-08-20
+  after the `merged_gw.csv` duplicate-row fix - see below).
 - **Squad optimizer** (`squad_optimizer.py`): single-week ILP. Was
   undervaluing premiums; fixed with a price-conditional bias correction
   (`PRICE_BIAS_CORRECTION`) after backtesting showed the real cause was mean
   miscalibration, not missing variance-reward - see "Squad optimizer premium
   fix" below for the full story, including the variance approach that was
-  tried first and backtested WORSE.
+  tried first and backtested WORSE. Refit 2026-08-20 (see "merged_gw.csv
+  duplicate-row fix" below): +1.59 pts/GW now, down from +2.24 - real effect,
+  weaker than first measured.
 - **Match model** (`match_model.py`): Poisson goal model. 45.5% winner
   accuracy vs 42.6% naive, Brier 0.208 vs 0.218. Modest real edge. Now has an
   optional Dixon-Coles low-score correlation correction (`fixture_probabilities(...,
@@ -33,7 +36,8 @@ and each script's docstring for the numbers and what they mean.
 - **Player props** (`player_props.py`): anytime scorer/assist probabilities.
   Was initially WORSE than naive (overconfident from a flat 75-min assumption
   and no shrinkage on noisy small-sample rates) - fixed, now beats baseline
-  on both scorer (0.0274 vs 0.0300 Brier) and assist (0.0280 vs 0.0290).
+  on both scorer (0.0276 vs 0.0302 Brier) and assist (0.0284 vs 0.0294 Brier)
+  (updated 2026-08-20 after the `merged_gw.csv` duplicate-row fix).
 - **Fixture ticker** (`fixture_ticker.py`): built directly on match_model's
   lambdas, not a separate heuristic. Sanity-checked, not separately
   backtested (low marginal need given it's a direct derivative).
@@ -235,6 +239,71 @@ live data: the 2 sub-50% players are now flagged, the 24 at 75% still
 aren't. No live squad exists yet to regression-test this against a real
 alert email (GW1 hasn't happened), so re-confirm once the AI account has a
 real squad and a real doubtful player shows up.
+
+## merged_gw.csv duplicate-row fix (2026-08-20 session)
+
+Priority 2 tonight. Applied the same dedup/aggregate fix
+`backtest_squad_optimizer.py` already had (drop exact-duplicate rows, then
+`groupby(["element", "GW"]).agg(sum for CORE_STATS+OPTIONAL_STATS, first for
+everything else)` before building any rolling window) to
+`train_points_model.py`'s `load_season()` and `backtest_player_props.py`'s
+`build_test_season_rolling()`. Re-ran both end-to-end (real run, not
+estimated) and compared:
+
+| | before (had the bug) | after (fixed) |
+|---|---|---|
+| Points model MAE, held-out 2025-26 | 0.993 | **1.012** |
+| Naive rolling-avg baseline MAE | 1.042 | 1.057 |
+| Scorer Brier | 0.0274 (vs naive 0.0300) | 0.0276 (vs naive 0.0302) |
+| Assist Brier | 0.0280 (vs naive 0.0290) | 0.0284 (vs naive 0.0294) |
+
+Headline claims still hold (model still clearly beats naive baseline on all
+three metrics, by a similar margin) but the exact numbers in the README are
+now stale in the fourth-decimal sense the previous session flagged as
+unverified - **README's "MAE 0.99" / player-props Brier numbers should be
+updated to the "after" column above.** Train/test row counts dropped
+~4-5% (156207→149362 train, 29757→29338 test rows pre-rolling) confirming
+the duplication was real and not negligible, just not large enough to flip
+any headline conclusion.
+
+**Cascading effect on the squad optimizer (found, not just anticipated):**
+retraining `points_model.pkl` changes its predictions, and
+`squad_optimizer.PRICE_BIAS_CORRECTION` is a hardcoded linear fit *against
+this specific model's* bias pattern - so it went stale the moment the model
+was retrained. Refit it the same way the original was derived (full 2025-26
+season, `bias = actual - predicted` vs price, `np.polyfit`) using the new
+model: `{"a": -0.578167, "b": 0.018724}`, replacing the old
+`{"a": -0.776184, "b": 0.020478}`. Re-ran `backtest_squad_optimizer.py`
+(which fits its own GW6-20 correction independently for its held-out
+methodology, unaffected by the production constant) with the new model:
+
+| | before | after |
+|---|---|---|
+| Uncorrected baseline, avg XI+captain pts/GW | 60.7 | 57.47 |
+| Price-corrected, avg XI+captain pts/GW | 62.9 | 59.06 |
+| Mean lift | +2.24 | **+1.588** |
+| GWs improved (of 17) | 10 | **7** |
+
+The fix is still net positive (total points across the 17-GW eval window:
+1004 vs 977 uncorrected) but the story is meaningfully weaker than last
+night's - lift shrank by ~30% and it now improves fewer than half the
+held-out gameweeks rather than well over half. Worth a closer look before
+leaning on this number for a real decision (e.g. does the correction need a
+different functional form now, or is the weaker result mostly just fewer
+duplicate-inflated premium-player rows propping up the old fit).
+
+**Not re-verified tonight, flagged for whoever picks this up next**:
+`risk_analyzer.py` and `multi_week_planner.py`/`multi_week_projections.py`
+both consume `squad_optimizer.load_predictions()`, so they're downstream of
+tonight's retrained model and refit correction too. `risk_analyzer.py`'s
+minutes-floor backtest (`backtest_risk_analyzer_minutes_floor.py`) and
+`multi_week_planner.py`'s DGW test haven't been re-run against the new
+model - their previously-reported numbers may also be slightly stale, same
+mechanism as the squad optimizer above. Didn't chase this further tonight
+to stay inside the stated priority order; flagging rather than guessing.
+
+`models/points_model.pkl` and `models/feature_columns.json` are
+regenerated and committed with this fix.
 
 ## Priority order for what's next
 

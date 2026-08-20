@@ -32,8 +32,11 @@ model+blend systematically **under-predicts expensive players specifically**
 prices) — a calibration problem. `squad_optimizer.py`'s
 `PRICE_BIAS_CORRECTION` fixes it with a price-conditional correction, fit on
 one part of the 2025-26 season and validated on a held-out later part it
-never saw: +2.24 actual XI+captain points/GW on average, improved 10/17
-gameweeks. See `backtest_squad_optimizer.py`.
+never saw: +1.59 actual XI+captain points/GW on average, improved 7/17
+gameweeks (refit 2026-08-20 after the `merged_gw.csv` duplicate-row fix
+below changed the points model it's fit against — see NEXT_STEPS.md for the
+before/after and why the effect is now real but weaker). See
+`backtest_squad_optimizer.py`.
 
 ### Testing caveat
 
@@ -52,8 +55,10 @@ Team ID.**
   [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League)
   dataset, using a trailing 5-gameweek rolling window per player (minutes, points,
   ICT index, xGI, bps, defensive contribution, etc). Validated on the held-out
-  2025-26 season it never trained on: **MAE 0.99 pts/GW** vs a 1.04 naive-form
-  baseline. Chronological split throughout — no leakage.
+  2025-26 season it never trained on: **MAE 1.01 pts/GW** vs a 1.06 naive-form
+  baseline. Chronological split throughout — no leakage. (Numbers as of
+  2026-08-20's `merged_gw.csv` duplicate-row fix — see NEXT_STEPS.md; the
+  model itself didn't change, some contaminated training/eval rows did.)
 - **`src/build_gw1_features.py`** — bridges last season's closing form onto this
   season's current player pool (matched by name), since GW1 has no in-season
   history yet. 454/567 current players matched; the rest fall back to a

@@ -67,6 +67,18 @@ def load_season(season: str) -> pd.DataFrame:
         df["position"] = df["position"].replace({"GKP": "GK"})
 
     df = df.dropna(subset=["position"])
+
+    # merged_gw.csv has two kinds of (element, GW) duplicates that both
+    # distort the "trailing 5 gameweeks" rolling window if left in: exact
+    # duplicate rows (a data-file glitch) and genuine double gameweeks (two
+    # different fixture rows for the same player/GW, which should sum, not
+    # duplicate). Same fix as backtest_squad_optimizer.py - see NEXT_STEPS.md.
+    df = df.drop_duplicates()
+    sum_cols = CORE_STATS + OPTIONAL_STATS
+    first_cols = [c for c in df.columns if c not in sum_cols + ["element", "GW"]]
+    df = df.groupby(["element", "GW"], as_index=False).agg(
+        {**{c: "sum" for c in sum_cols}, **{c: "first" for c in first_cols}}
+    )
     return df
 
 
