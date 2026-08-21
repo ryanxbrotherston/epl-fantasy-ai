@@ -53,7 +53,7 @@ def build_card(id_, name, position, team_code, points, is_captain, is_vice, flag
     }
 
 
-def _player_card_html(card: dict) -> str:
+def _player_card_html(card: dict, edge: str | None = None) -> str:
     badge_url = team_visuals.badge_url(card["team_code"], size=50)
     fallback_color = team_visuals.team_color(card["team_code"])
     flag_color = FLAG_COLOR.get(card["flag"], FLAG_COLOR["unknown"])
@@ -85,7 +85,13 @@ def _player_card_html(card: dict) -> str:
     # CSS-only:
     #  - <details>/<summary> (flag popover) is a native tap-to-toggle
     #    disclosure widget requiring zero JS - confirmed working (open/
-    #    close on tap) live.
+    #    close on tap) live. Its popover defaults to centered under the
+    #    dot, which clips against .pv-pitch's overflow:hidden for cards
+    #    near the pitch's left/right edge on a narrow (mobile) width -
+    #    confirmed live by measuring a real overflow (~10px off the right
+    #    edge for the last card in a 3-wide FWD row at 320px). `edge`
+    #    below adds a class so the popover anchors to the card's own
+    #    outer edge instead of centering, for the first/last card in a row.
     #  - The badge itself is now a background-image div layered over a
     #    solid-color circle (pv-badge-fallback), instead of an <img> with
     #    onerror. A failed background-image simply doesn't paint anything
@@ -99,7 +105,7 @@ def _player_card_html(card: dict) -> str:
             <div class="pv-badge-fallback" style="background:{fallback_color};"></div>
             <div class="pv-badge" style="background-image:url('{badge_url}');"></div>
             {armband}
-            <details class="pv-flag-details" title="{tooltip}">
+            <details class="pv-flag-details{f' pv-flag-details-{edge}' if edge else ''}" title="{tooltip}">
                 <summary class="pv-flag-dot" style="background:{flag_color};"></summary>
                 <div class="pv-flag-popover">{tooltip}</div>
             </details>
@@ -111,7 +117,16 @@ def _player_card_html(card: dict) -> str:
 
 
 def _row_html(cards: list[dict]) -> str:
-    cards_html = "".join(_player_card_html(c) for c in cards)
+    """First/last card in a row (of 2+) get an 'edge' marker so their flag
+    popover anchors to the card's own outer edge instead of centering -
+    see _player_card_html's comment. A single-card row (e.g. GK) sits
+    centered on the pitch already, so it's left at the default center
+    anchor."""
+    n = len(cards)
+    cards_html = "".join(
+        _player_card_html(c, edge="first" if (i == 0 and n > 1) else "last" if (i == n - 1 and n > 1) else None)
+        for i, c in enumerate(cards)
+    )
     return f'<div class="pv-row">{cards_html}</div>'
 
 
@@ -264,6 +279,17 @@ PITCH_CSS = """
     transform: translateX(-50%);
     border: 5px solid transparent; border-bottom-color: var(--pv-panel-elevated);
 }
+/* Edge cards (first/last in a row of 2+, see _row_html): anchor the
+   popover to the card's own outer edge instead of centering under the
+   dot, so it can't extend past .pv-pitch's overflow:hidden boundary on a
+   narrow screen - confirmed live, a centered 180px popover on the
+   rightmost card of a 3-wide row clipped ~10px off the pitch edge at
+   320px width. The arrow's offset is an approximation back toward the
+   dot, not pixel-perfect - a minor cosmetic trade for not clipping. */
+.pv-flag-details-first .pv-flag-popover { left: 0; transform: none; }
+.pv-flag-details-first .pv-flag-popover::before { left: 14px; transform: none; }
+.pv-flag-details-last .pv-flag-popover { left: auto; right: 0; transform: none; }
+.pv-flag-details-last .pv-flag-popover::before { left: auto; right: 14px; transform: none; }
 .pv-name {
     font-family: 'Space Grotesk', sans-serif; font-size: 12px; font-weight: 600;
     color: var(--pv-text-primary); margin-top: 6px; white-space: nowrap;
