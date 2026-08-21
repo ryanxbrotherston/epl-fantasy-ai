@@ -20,6 +20,7 @@ Card dict shape (all keys required):
 """
 
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -53,7 +54,7 @@ def build_card(id_, name, position, team_code, points, is_captain, is_vice, flag
     }
 
 
-def _player_card_html(card: dict, edge: str | None = None) -> str:
+def _player_card_html(card: dict, group_id: str) -> str:
     badge_url = team_visuals.badge_url(card["team_code"], size=50)
     fallback_color = team_visuals.team_color(card["team_code"])
     flag_color = FLAG_COLOR.get(card["flag"], FLAG_COLOR["unknown"])
@@ -69,7 +70,11 @@ def _player_card_html(card: dict, edge: str | None = None) -> str:
         points_display = f"{card['points']:.1f} (x2)"
         points_class += " pv-points-captain"
 
-    tooltip = f"{card['basis']}: {card['detail']}"
+    # Player's own name goes first in the popover text - it can still land
+    # near a neighboring card on a tight row (see the group/overflow notes
+    # below), so the text itself has to disambiguate whose status this is,
+    # not just its position on screen.
+    tooltip = f"{card['name']} — {card['basis']}: {card['detail']}"
 
     # Neither of the two elements below use a JS event handler
     # (onclick/onerror) - confirmed live (2026-08-21) that Streamlit's
@@ -84,14 +89,16 @@ def _player_card_html(card: dict, edge: str | None = None) -> str:
     # attribute-level stripping, not a parsing quirk. Both replacements are
     # CSS-only:
     #  - <details>/<summary> (flag popover) is a native tap-to-toggle
-    #    disclosure widget requiring zero JS - confirmed working (open/
-    #    close on tap) live. Its popover defaults to centered under the
-    #    dot, which clips against .pv-pitch's overflow:hidden for cards
-    #    near the pitch's left/right edge on a narrow (mobile) width -
-    #    confirmed live by measuring a real overflow (~10px off the right
-    #    edge for the last card in a 3-wide FWD row at 320px). `edge`
-    #    below adds a class so the popover anchors to the card's own
-    #    outer edge instead of centering, for the first/last card in a row.
+    #    disclosure widget requiring zero JS. The `name` attribute groups
+    #    every flag-details on ONE pitch into a native exclusive accordion
+    #    (Chrome 120+/Safari 17.4+/Firefox 120+, confirmed live) - opening
+    #    one auto-closes any other that's open, and tapping the same dot
+    #    again still closes it. Without this, each <details> was fully
+    #    independent, so several could end up open at once with no
+    #    obvious way to close them - reported live, not hypothetical.
+    #    group_id is unique per render_pitch() call so two pitches on the
+    #    same page (e.g. My Team + Friends, both mounted at once by
+    #    Streamlit's tabs) never cross-close each other.
     #  - The badge itself is now a background-image div layered over a
     #    solid-color circle (pv-badge-fallback), instead of an <img> with
     #    onerror. A failed background-image simply doesn't paint anything
@@ -105,7 +112,7 @@ def _player_card_html(card: dict, edge: str | None = None) -> str:
             <div class="pv-badge-fallback" style="background:{fallback_color};"></div>
             <div class="pv-badge" style="background-image:url('{badge_url}');"></div>
             {armband}
-            <details class="pv-flag-details{f' pv-flag-details-{edge}' if edge else ''}" title="{tooltip}">
+            <details class="pv-flag-details" name="pv-flag-{group_id}" title="{tooltip}">
                 <summary class="pv-flag-dot" style="background:{flag_color};"></summary>
                 <div class="pv-flag-popover">{tooltip}</div>
             </details>
@@ -116,17 +123,8 @@ def _player_card_html(card: dict, edge: str | None = None) -> str:
     """
 
 
-def _row_html(cards: list[dict]) -> str:
-    """First/last card in a row (of 2+) get an 'edge' marker so their flag
-    popover anchors to the card's own outer edge instead of centering -
-    see _player_card_html's comment. A single-card row (e.g. GK) sits
-    centered on the pitch already, so it's left at the default center
-    anchor."""
-    n = len(cards)
-    cards_html = "".join(
-        _player_card_html(c, edge="first" if (i == 0 and n > 1) else "last" if (i == n - 1 and n > 1) else None)
-        for i, c in enumerate(cards)
-    )
+def _row_html(cards: list[dict], group_id: str) -> str:
+    cards_html = "".join(_player_card_html(c, group_id) for c in cards)
     return f'<div class="pv-row">{cards_html}</div>'
 
 
@@ -134,7 +132,11 @@ def render_pitch(xi_cards: list[dict], bench_cards: list[dict]) -> str:
     """Full pitch HTML: grass background, halfway line, center circle,
     penalty boxes, one row per outfield position line (sized dynamically
     from whatever formation the real XI is - see formation_from_xi),
-    GK row always alone at the back, bench strip below in the same style."""
+    GK row always alone at the back, bench strip below in the same style.
+
+    A fresh group_id per call scopes the flag popovers' exclusive-accordion
+    grouping (see _player_card_html) to just this one pitch."""
+    group_id = uuid.uuid4().hex[:8]
     gk = [c for c in xi_cards if c["position"] == "GK"]
     outfield_rows = []
     for pos in ["DEF", "MID", "FWD"]:
@@ -142,13 +144,13 @@ def render_pitch(xi_cards: list[dict], bench_cards: list[dict]) -> str:
         if row:
             outfield_rows.append(row)
 
-    rows_html = _row_html(gk) + "".join(_row_html(r) for r in outfield_rows)
+    rows_html = _row_html(gk, group_id) + "".join(_row_html(r, group_id) for r in outfield_rows)
 
     bench_html = ""
     if bench_cards:
         bench_html = f"""
         <div class="pv-bench-label">Bench</div>
-        <div class="pv-bench-strip">{"".join(_player_card_html(c) for c in bench_cards)}</div>
+        <div class="pv-bench-strip">{"".join(_player_card_html(c, group_id) for c in bench_cards)}</div>
         """
 
     return f"""
@@ -179,7 +181,19 @@ PITCH_CSS = """
     min-height: 400px;
     max-height: 640px;
     border-radius: 14px;
-    overflow: hidden;
+    /* Was overflow:hidden - reported live (2026-08-22) that even after
+       edge-anchoring the flag popover to avoid clipping, it could still
+       render on top of a neighboring player's badge on a tight row
+       (5-wide MID rows on a narrow phone leave ~70px per card, far less
+       than the popover's own width). overflow:hidden made that neighbor-
+       overlap the ONLY visible failure mode - visible means an edge-case
+       popover instead spills past the pitch's rounded corner onto the
+       page's own background, which is a far more honest failure than
+       silently disappearing or looking like it belongs to someone else.
+       The pitch's own background/border-radius still render correctly
+       with overflow:visible - only child content that crosses the box's
+       edge is affected, confirmed live. */
+    overflow: visible;
     background: repeating-linear-gradient(
         to bottom,
         var(--pv-turf-a) 0, var(--pv-turf-a) 12.5%,
@@ -266,7 +280,7 @@ PITCH_CSS = """
 }
 .pv-flag-popover {
     position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
-    margin-top: 6px; width: max-content; max-width: 180px;
+    margin-top: 6px; width: max-content; max-width: 150px;
     background: var(--pv-panel-elevated); color: var(--pv-text-primary);
     border: 1px solid var(--pv-border);
     font-family: 'Space Grotesk', sans-serif; font-size: 11px; font-weight: 500;
@@ -279,17 +293,6 @@ PITCH_CSS = """
     transform: translateX(-50%);
     border: 5px solid transparent; border-bottom-color: var(--pv-panel-elevated);
 }
-/* Edge cards (first/last in a row of 2+, see _row_html): anchor the
-   popover to the card's own outer edge instead of centering under the
-   dot, so it can't extend past .pv-pitch's overflow:hidden boundary on a
-   narrow screen - confirmed live, a centered 180px popover on the
-   rightmost card of a 3-wide row clipped ~10px off the pitch edge at
-   320px width. The arrow's offset is an approximation back toward the
-   dot, not pixel-perfect - a minor cosmetic trade for not clipping. */
-.pv-flag-details-first .pv-flag-popover { left: 0; transform: none; }
-.pv-flag-details-first .pv-flag-popover::before { left: 14px; transform: none; }
-.pv-flag-details-last .pv-flag-popover { left: auto; right: 0; transform: none; }
-.pv-flag-details-last .pv-flag-popover::before { left: auto; right: 14px; transform: none; }
 .pv-name {
     font-family: 'Space Grotesk', sans-serif; font-size: 12px; font-weight: 600;
     color: var(--pv-text-primary); margin-top: 6px; white-space: nowrap;

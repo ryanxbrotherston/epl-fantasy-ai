@@ -328,7 +328,7 @@ def refresh_predictions_with_live_data(base_preds: pd.DataFrame, bootstrap: dict
 # ---------- sidebar: gameweek status ----------
 
 st.title("⚽ EPL Fantasy AI")
-st.caption("The dot on each player's badge = starting likelihood (hover for detail). "
+st.caption("The dot on each player's badge = starting likelihood (tap it for detail). "
            "🟢🟡🔴 with **official status** = FPL's own status field. With **confirmed team sheet** = "
            "highlightly.net's real released lineup (only exists ~30-40min pre-kickoff). With "
            "**predicted** = fpledits.com's third-party guess, refreshed through the week - not official.")
