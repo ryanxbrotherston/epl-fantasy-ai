@@ -264,7 +264,15 @@ PITCH_CSS = """
 .pv-captain { background: var(--pv-captain); color: #0B0D14; }
 .pv-vice { background: var(--pv-vice); color: white; }
 .pv-flag-details {
-    position: absolute; bottom: -2px; right: -2px;
+    /* z-index must beat .pv-badge's (2) and .pv-armband's (2) - without
+       this, the flag dot sits UNDER the crest image in real click hit-
+       testing (confirmed live: document.elementFromPoint() on the dot's
+       own screen coordinates returned .pv-badge, not the summary, so
+       real taps landed on the badge and did nothing - a synthetic JS
+       .click() call on the summary element doesn't go through hit-
+       testing at all, so it kept "working" in that kind of test while
+       being fully unclickable for a real tap the whole time). */
+    position: absolute; bottom: -2px; right: -2px; z-index: 3;
 }
 .pv-flag-details summary {
     width: 12px; height: 12px; border-radius: 50%;

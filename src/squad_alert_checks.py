@@ -58,7 +58,8 @@ def flag_bench_likely_players(picks_df: pd.DataFrame, predicted_starting_ids: se
 
     flags = remaining.apply(
         lambda r: lineup_predictor.starting_likelihood_flag(
-            r["element"], r["status"], predicted_starting_ids
+            r["element"], r["status"], predicted_starting_ids,
+            chance_of_playing=pd.to_numeric(r.get("chance_of_playing_next_round"), errors="coerce"),
         ),
         axis=1,
     )

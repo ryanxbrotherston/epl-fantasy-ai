@@ -228,7 +228,10 @@ def compute_starting_likelihood(row: pd.Series, id_col: str, predicted_ids: set 
         confirmed_status = confirmed_lineup.player_confirmed_status(
             first, second, row.get("web_name", ""), confirmed
         )
-    return lineup_predictor.starting_likelihood_flag(player_id, row["status"], predicted_ids, confirmed_status)
+    chance = pd.to_numeric(row.get("chance_of_playing_next_round"), errors="coerce")
+    return lineup_predictor.starting_likelihood_flag(
+        player_id, row["status"], predicted_ids, confirmed_status, chance,
+    )
 
 
 def build_pitch_cards(df: pd.DataFrame, id_col: str, points_col: str, bootstrap: dict,

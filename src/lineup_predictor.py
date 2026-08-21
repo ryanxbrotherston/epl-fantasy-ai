@@ -80,7 +80,8 @@ def fetch_predicted_starting_ids() -> set[int] | None:
 
 def starting_likelihood_flag(player_id: int, status: str,
                               predicted_starting_ids: set[int] | None,
-                              confirmed_status: bool | None = None) -> dict:
+                              confirmed_status: bool | None = None,
+                              chance_of_playing: float | None = None) -> dict:
     """One player's starting-likelihood flag, from whichever signals are
     available. Always returns {'flag': 'green'/'yellow'/'red'/'unknown',
     'basis': 'confirmed'/'confirmed_lineup'/'early'/'none', 'detail': str}
@@ -92,10 +93,23 @@ def starting_likelihood_flag(player_id: int, status: str,
     starting, False=confirmed NOT starting, None=not available - not yet
     released, unreachable, or no fixture close enough to kickoff to have
     checked). Optional and defaults to None so existing callers that
-    don't have per-fixture context keep working unchanged."""
+    don't have per-fixture context keep working unchanged.
+
+    chance_of_playing: FPL's own `chance_of_playing_next_round` (0-100,
+    or None if FPL hasn't set one) - the same percentage the official FPL
+    app shows next to a doubtful/returning player. Folded into the detail
+    text wherever FPL actually provides it, not just for status 'd' -
+    FPL sometimes carries one on a recovering 'i' too."""
+    # NaN (e.g. from pd.to_numeric(..., errors="coerce") on a missing value)
+    # isn't None but must be treated the same way here - NaN != NaN is the
+    # dependency-free way to catch it without importing pandas/math just
+    # for this one check.
+    no_chance_value = chance_of_playing is None or chance_of_playing != chance_of_playing
+    chance_str = "" if no_chance_value else f", {int(chance_of_playing)}% chance of playing"
+
     if status in UNAVAILABLE_STATUSES:
         return {"flag": "red", "basis": "confirmed",
-                "detail": f"FPL status '{status}' (official)"}
+                "detail": f"FPL status '{status}' (official){chance_str}"}
 
     if confirmed_status is True:
         return {"flag": "green", "basis": "confirmed_lineup",
@@ -107,14 +121,14 @@ def starting_likelihood_flag(player_id: int, status: str,
     if predicted_starting_ids is None:
         if status == "d":
             return {"flag": "yellow", "basis": "confirmed",
-                     "detail": "FPL status 'doubtful' (official)"}
+                     "detail": f"FPL status 'doubtful' (official){chance_str}"}
         return {"flag": "unknown", "basis": "none",
                 "detail": "early-prediction source unavailable this check"}
 
     in_predicted_xi = player_id in predicted_starting_ids
     if in_predicted_xi and status == "d":
         return {"flag": "yellow", "basis": "early",
-                "detail": "in fpledits.com's predicted XI, but FPL lists them doubtful"}
+                "detail": f"in fpledits.com's predicted XI, but FPL lists them doubtful{chance_str}"}
     if in_predicted_xi:
         return {"flag": "green", "basis": "early",
                 "detail": "in fpledits.com's predicted starting XI"}
