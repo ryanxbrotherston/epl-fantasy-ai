@@ -161,6 +161,7 @@ PITCH_CSS = """
     position: relative;
     width: 100%;
     aspect-ratio: 3 / 2.4;
+    min-height: 400px;
     max-height: 640px;
     border-radius: 14px;
     overflow: hidden;
