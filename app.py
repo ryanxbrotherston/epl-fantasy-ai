@@ -229,8 +229,9 @@ def compute_starting_likelihood(row: pd.Series, id_col: str, predicted_ids: set 
             first, second, row.get("web_name", ""), confirmed
         )
     chance = pd.to_numeric(row.get("chance_of_playing_next_round"), errors="coerce")
+    news = row.get("news") or None  # FPL uses "" for "no news", not null - normalize to None
     return lineup_predictor.starting_likelihood_flag(
-        player_id, row["status"], predicted_ids, confirmed_status, chance,
+        player_id, row["status"], predicted_ids, confirmed_status, chance, news,
     )
 
 
@@ -304,11 +305,11 @@ def refresh_predictions_with_live_data(base_preds: pd.DataFrame, bootstrap: dict
     estimate (that part doesn't go stale day to day)."""
     live = fpl_api.players_dataframe(bootstrap)
     live_cols = live[["id", "now_cost", "status", "ep_next", "points_per_game",
-                       "chance_of_playing_next_round", "team_name"]]
+                       "chance_of_playing_next_round", "team_name", "news"]]
 
     merged = base_preds.drop(
         columns=["now_cost", "status", "ep_next", "points_per_game",
-                 "chance_of_playing_next_round", "team_name"],
+                 "chance_of_playing_next_round", "team_name", "news"],
         errors="ignore",
     ).merge(live_cols, on="id", how="left")
 

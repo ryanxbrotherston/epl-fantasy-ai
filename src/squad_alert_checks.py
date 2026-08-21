@@ -60,6 +60,7 @@ def flag_bench_likely_players(picks_df: pd.DataFrame, predicted_starting_ids: se
         lambda r: lineup_predictor.starting_likelihood_flag(
             r["element"], r["status"], predicted_starting_ids,
             chance_of_playing=pd.to_numeric(r.get("chance_of_playing_next_round"), errors="coerce"),
+            news=r.get("news") or None,  # FPL uses "" for "no news", not null - normalize to None
         ),
         axis=1,
     )
