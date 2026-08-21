@@ -119,6 +119,18 @@ def team_picks_dataframe(team_id: int, event: int, bootstrap: dict):
 
     players = players_dataframe(bootstrap)
     picks = pd.DataFrame(picks_data["picks"])
+    # picks_data["picks"] carries its own "position" field (squad slot
+    # number 1-15, an int - not used anywhere in this codebase) which
+    # collides with players_dataframe()'s "position" (GK/DEF/MID/FWD,
+    # what every caller here actually means by that name). Left unrenamed,
+    # pandas silently resolves the collision into position_x/position_y
+    # instead of raising - the merged frame then has NO "position" column
+    # at all, and every caller reading merged["position"] KeyErrors.
+    # Confirmed live against a real GW1 picks response (2026-08-22, the
+    # first time this endpoint returned real picks - this bug predates
+    # this change and could never surface until a live picks response
+    # actually existed to merge against).
+    picks = picks.rename(columns={"position": "squad_slot"})
     merged = picks.merge(
         players[["id", "web_name", "position", "team", "team_short", "now_cost",
                   "form", "ep_next", "points_per_game", "status",
