@@ -370,69 +370,6 @@ def get_ai_team_id():
         return int(val) if val else None
 
 
-with tab_ai:
-    st.subheader("The AI-run team")
-    ai_team_id = get_ai_team_id()
-
-    if ai_team_id is None:
-        st.caption("Every decision here is made by the model. No human input. "
-                   "**Not yet submitted to a real FPL account** — this is the current recommendation.")
-
-        base = load_base_predictions()
-        preds = refresh_predictions_with_live_data(base, bootstrap) if live_ok else base
-
-        squad = pick_squad(preds, budget=BUDGET)
-        xi, bench, formation, captain, vice = pick_starting_xi(squad)
-
-        spend = squad["now_cost"].sum() / 10
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Squad value", f"£{spend:.1f}m / £100.0m")
-        c2.metric("Formation", formation)
-        c3.metric("Predicted XI points", f"{xi['predicted_points'].sum():.1f}")
-
-        if live_ok:
-            render_squad_pitch(xi, bench, "id", "predicted_points", bootstrap, all_players,
-                                gw["id"], captain_id=captain["id"], vice_id=vice["id"])
-        else:
-            st.info("Live FPL API unreachable - starting-likelihood flags need it, so the pitch "
-                    "view is skipped this run. Try again shortly.")
-
-    else:
-        st.caption("🔒 Live and locked — this reads directly from the AI's real FPL account. "
-                   "Nobody viewing this page, including friends, can change it. Changes only "
-                   "happen when Ryan executes an alert email on the real account.")
-
-        if not live_ok:
-            st.error("Can't reach the live FPL API right now, so the AI team can't be displayed.")
-        else:
-            entry = fpl_api.get_entry(ai_team_id)
-            if entry is None:
-                st.error("AI_TEAM_ID is set but no matching FPL team was found — check the ID.")
-            else:
-                st.success(f"**{entry['name']}**")
-                current_event = gw["id"] if gw["is_current"] else max(gw["id"] - 1, 1)
-                result = fpl_api.team_picks_dataframe(ai_team_id, current_event, bootstrap)
-                if result is None:
-                    st.info(f"No squad locked in yet for Gameweek {current_event}.")
-                else:
-                    picks_df, history = result
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Total points", entry.get("summary_overall_points") or "N/A yet")
-                    c2.metric("Overall rank", format_rank(entry))
-                    c3.metric("Bank", f"£{history['bank'] / 10:.1f}m")
-                    c4.metric("Team value", f"£{history['value'] / 10:.1f}m")
-
-                    xi = picks_df[picks_df["multiplier"] > 0]
-                    bench = picks_df[picks_df["multiplier"] == 0]
-                    captain_row = picks_df[picks_df["is_captain"]]
-                    vice_row = picks_df[picks_df["is_vice_captain"]]
-                    render_squad_pitch(
-                        xi, bench, "element", "ep_next", bootstrap, all_players, current_event,
-                        captain_id=captain_row["element"].iloc[0] if not captain_row.empty else None,
-                        vice_id=vice_row["element"].iloc[0] if not vice_row.empty else None,
-                    )
-
-
 # ---------- shared: team lookup by ID ----------
 
 def render_team_lookup(key_prefix: str, default_id: int | None = None, show_suggested_changes: bool = False):
@@ -874,6 +811,71 @@ def render_watchlist():
     show["now_cost"] = (show["now_cost"] / 10).map("£{:.1f}m".format)
     show["predicted_points"] = show["predicted_points"].round(1)
     st.dataframe(show, hide_index=True, use_container_width=True)
+
+
+with tab_ai:
+    st.subheader("The AI-run team")
+    ai_team_id = get_ai_team_id()
+
+    if ai_team_id is None:
+        st.caption("Every decision here is made by the model. No human input. "
+                   "**Not yet submitted to a real FPL account** — this is the current recommendation.")
+
+        base = load_base_predictions()
+        preds = refresh_predictions_with_live_data(base, bootstrap) if live_ok else base
+
+        squad = pick_squad(preds, budget=BUDGET)
+        xi, bench, formation, captain, vice = pick_starting_xi(squad)
+
+        spend = squad["now_cost"].sum() / 10
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Squad value", f"£{spend:.1f}m / £100.0m")
+        c2.metric("Formation", formation)
+        c3.metric("Predicted XI points", f"{xi['predicted_points'].sum():.1f}")
+
+        if live_ok:
+            render_squad_pitch(xi, bench, "id", "predicted_points", bootstrap, all_players,
+                                gw["id"], captain_id=captain["id"], vice_id=vice["id"])
+        else:
+            st.info("Live FPL API unreachable - starting-likelihood flags need it, so the pitch "
+                    "view is skipped this run. Try again shortly.")
+
+    else:
+        st.caption("🔒 Live and locked — this reads directly from the AI's real FPL account. "
+                   "Nobody viewing this page, including friends, can change it. Changes only "
+                   "happen when Ryan executes an alert email on the real account.")
+
+        if not live_ok:
+            st.error("Can't reach the live FPL API right now, so the AI team can't be displayed.")
+        else:
+            entry = fpl_api.get_entry(ai_team_id)
+            if entry is None:
+                st.error("AI_TEAM_ID is set but no matching FPL team was found — check the ID.")
+            else:
+                st.success(f"**{entry['name']}**")
+                current_event = gw["id"] if gw["is_current"] else max(gw["id"] - 1, 1)
+                result = fpl_api.team_picks_dataframe(ai_team_id, current_event, bootstrap)
+                if result is None:
+                    st.info(f"No squad locked in yet for Gameweek {current_event}.")
+                else:
+                    picks_df, history = result
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Total points", entry.get("summary_overall_points") or "N/A yet")
+                    c2.metric("Overall rank", format_rank(entry))
+                    c3.metric("Bank", f"£{history['bank'] / 10:.1f}m")
+                    c4.metric("Team value", f"£{history['value'] / 10:.1f}m")
+
+                    xi = picks_df[picks_df["multiplier"] > 0]
+                    bench = picks_df[picks_df["multiplier"] == 0]
+                    captain_row = picks_df[picks_df["is_captain"]]
+                    vice_row = picks_df[picks_df["is_vice_captain"]]
+                    render_squad_pitch(
+                        xi, bench, "element", "ep_next", bootstrap, all_players, current_event,
+                        captain_id=captain_row["element"].iloc[0] if not captain_row.empty else None,
+                        vice_id=vice_row["element"].iloc[0] if not vice_row.empty else None,
+                    )
+
+                    render_transfer_advice("ai", ai_team_id, picks_df, history, current_event)
 
 
 with tab_mine:
