@@ -599,9 +599,18 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
             label = "attacking" if attacking else "defensive"
             out_name, in_name = team_id_to_name.get(row["team"]), replacement["team_name"]
             if out_name in fixture_summary.index and in_name in fixture_summary.index:
+                # This is a FIXTURE DIFFICULTY index, not a price or points - 1.0 = league-average
+                # difficulty, higher = tougher run, lower = easier (see fixture_ticker.py). Got
+                # mistaken for a price by a real user (no unit shown next to a bare decimal, and
+                # this app shows actual prices elsewhere as "£X.Xm") - the metric label and a help
+                # tooltip now spell out what it is instead of a bare number.
+                difficulty_help = ("Fixture difficulty over the next 3 gameweeks - 1.0 = league "
+                                    "average, higher = tougher run, lower = easier. NOT a price.")
                 fc1, fc2 = st.columns(2)
-                fc1.metric(f"{row['web_name']} next 3 ({label})", f"{fixture_summary.loc[out_name, metric]:.2f}")
-                fc2.metric(f"{replacement['web_name']} next 3 ({label})", f"{fixture_summary.loc[in_name, metric]:.2f}")
+                fc1.metric(f"{row['web_name']} next 3 fixtures ({label} difficulty)",
+                           f"{fixture_summary.loc[out_name, metric]:.2f}", help=difficulty_help)
+                fc2.metric(f"{replacement['web_name']} next 3 fixtures ({label} difficulty)",
+                           f"{fixture_summary.loc[in_name, metric]:.2f}", help=difficulty_help)
 
         if price_by_id is not None:
             if row["element"] in price_by_id.index:
