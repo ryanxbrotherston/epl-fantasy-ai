@@ -298,6 +298,20 @@ def render_squad_pitch(xi_df: pd.DataFrame, bench_df: pd.DataFrame, id_col: str,
     return xi_cards, bench_cards
 
 
+PPG_TRUST_RAMP_STARTS = 5  # squad_optimizer.load_predictions()'s "ppg" component is documented
+                            # as a "proven quality anchor" - true pre-season, when it's still last
+                            # season's points-per-game. Once refresh_predictions_with_live_data()
+                            # below swaps in bootstrap-static's LIVE points_per_game, that anchor
+                            # becomes this season's mean so far - with only 1-2 games played, that's
+                            # literally "how many points did you just score", not a quality signal,
+                            # and it swings the 20%-weighted blend hard off one good/bad game (e.g.
+                            # flagging a season-long starter for transfer-out after one poor game,
+                            # or a bench player for transfer-in after one good one - see conversation
+                            # 2026-08-27). Below this many starts this season, ppg's weight is
+                            # linearly shrunk toward 0 and handed to the stable season-long model
+                            # component instead; by PPG_TRUST_RAMP_STARTS it's back to full trust.
+
+
 def refresh_predictions_with_live_data(base_preds: pd.DataFrame, bootstrap: dict) -> pd.DataFrame:
     """Prices, injury status, and FPL's own ep_next drift daily pre-season -
     pull those fresh from bootstrap-static rather than trusting the snapshot
@@ -305,7 +319,7 @@ def refresh_predictions_with_live_data(base_preds: pd.DataFrame, bootstrap: dict
     estimate (that part doesn't go stale day to day)."""
     live = fpl_api.players_dataframe(bootstrap)
     live_cols = live[["id", "now_cost", "status", "ep_next", "points_per_game",
-                       "chance_of_playing_next_round", "team_name", "news"]]
+                       "chance_of_playing_next_round", "team_name", "news", "starts"]]
 
     merged = base_preds.drop(
         columns=["now_cost", "status", "ep_next", "points_per_game",
@@ -316,10 +330,16 @@ def refresh_predictions_with_live_data(base_preds: pd.DataFrame, bootstrap: dict
     from squad_optimizer import BLEND_WEIGHTS, UNAVAILABLE_STATUSES, apply_price_bias_correction
     ep_next = pd.to_numeric(merged["ep_next"], errors="coerce").fillna(merged["model_points"])
     ppg = pd.to_numeric(merged["points_per_game"], errors="coerce").fillna(merged["model_points"])
+
+    starts = pd.to_numeric(merged["starts"], errors="coerce").fillna(0)
+    ppg_trust = (starts / PPG_TRUST_RAMP_STARTS).clip(upper=1.0)
+    ppg_weight = BLEND_WEIGHTS["ppg"] * ppg_trust
+    model_weight = BLEND_WEIGHTS["model"] + (BLEND_WEIGHTS["ppg"] - ppg_weight)
+
     merged["predicted_points"] = (
-        BLEND_WEIGHTS["model"] * merged["model_points"]
+        model_weight * merged["model_points"]
         + BLEND_WEIGHTS["ep_next"] * ep_next
-        + BLEND_WEIGHTS["ppg"] * ppg
+        + ppg_weight * ppg
     )
     chance = pd.to_numeric(merged["chance_of_playing_next_round"], errors="coerce")
     doubtful = merged["status"].eq("d") & chance.notna()
@@ -638,7 +658,8 @@ def filter_candidate_pool(preds_all: pd.DataFrame, current_squad_ids: set,
 
 @st.cache_data(ttl=1800)
 def solve_transfer_plan(squad_ids_tuple: tuple, bank: int, free_transfers: int, target_event: int,
-                         team_id: int, _bootstrap: dict, _all_players: pd.DataFrame) -> pd.DataFrame:
+                         team_id: int, _bootstrap: dict, _all_players: pd.DataFrame,
+                         allow_hits: bool = True) -> pd.DataFrame:
     """Cached on the inputs that actually change the answer (squad, bank,
     free transfers, target gameweek, team id) - an MILP solve isn't free,
     so repeated views/clicks within the 30min window don't re-solve.
@@ -664,7 +685,7 @@ def solve_transfer_plan(squad_ids_tuple: tuple, bank: int, free_transfers: int, 
     return multi_week_planner.plan(
         projection_table, gameweeks, squad_ids, bank, free_transfers,
         chip_windows, chips_already_used, team_of,
-        time_limit=SOLVE_TIME_LIMIT_SECONDS,
+        time_limit=SOLVE_TIME_LIMIT_SECONDS, allow_hits=allow_hits,
     )
 
 
@@ -683,6 +704,13 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
              "transfer history. Correct it if it's wrong; the advice below solves around whatever "
              "you enter.",
     )
+    allow_hits = st.checkbox(
+        "Allow point hits (-4 pts per transfer beyond your free ones)",
+        value=False, key=f"{key_prefix}_allow_hits",
+        help="Off by default: the plan below only ever uses transfers you actually have "
+             "banked (or an unlimited amount during a wildcard/free hit week). Turn this on "
+             "to let the solver take a hit when it judges the points gain worth the -4.",
+    )
     if c2.button("Get transfer advice", key=f"{key_prefix}_plan_btn"):
         st.session_state[f"{key_prefix}_show_plan"] = True
 
@@ -697,7 +725,7 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
         try:
             plan_df = solve_transfer_plan(
                 tuple(sorted(picks_df["element"])), int(history.get("bank", 0)), int(free_transfers),
-                target_event, team_id, bootstrap, all_players,
+                target_event, team_id, bootstrap, all_players, allow_hits,
             )
         except Exception as e:
             st.error(f"Couldn't build a transfer plan right now: {e}")

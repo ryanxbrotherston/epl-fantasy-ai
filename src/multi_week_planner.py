@@ -54,6 +54,11 @@ def plan(
                                        # before this ever gets called) - CBC can still return its
                                        # best feasible solution so far rather than the proven
                                        # optimum if this is hit; see the sol_status note below.
+    allow_hits: bool = True,  # if False, transfers are hard-capped at whatever's free
+                               # each week (banked + wildcard/free hit) instead of letting
+                               # the solver trade -4pts/transfer for predicted-points gain -
+                               # some users would rather bank a mediocre gain than ever
+                               # take a hit, regardless of what the model says it's worth.
 ):
     prob = pulp.LpProblem("multi_week_fpl_plan", pulp.LpMaximize)
     players = projection_table["id"].tolist()
@@ -159,7 +164,11 @@ def plan(
             prob += free_transfers_avail[gw] >= free_transfers_avail[prev_gw] - prev_transfers_made + 1 - MAX_FREE_TRANSFERS * any_wildcard_or_freehit[prev_gw]
             prob += free_transfers_avail[gw] <= MAX_FREE_TRANSFERS
 
-        prob += hits[gw] >= transfers_made - free_transfers_avail[gw] - MAX_FREE_TRANSFERS * any_wildcard_or_freehit[gw]
+        if allow_hits:
+            prob += hits[gw] >= transfers_made - free_transfers_avail[gw] - MAX_FREE_TRANSFERS * any_wildcard_or_freehit[gw]
+        else:
+            prob += hits[gw] == 0
+            prob += transfers_made <= free_transfers_avail[gw] + MAX_FREE_TRANSFERS * any_wildcard_or_freehit[gw]
 
     for cid, c in chip_windows.items():
         var_dict = {"wildcard": wildcard, "freehit": freehit, "bboost": bboost, "3xc": triple_capt}[c["name"]]
