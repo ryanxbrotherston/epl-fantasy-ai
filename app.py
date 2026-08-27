@@ -533,14 +533,21 @@ def render_live_score(picks_df: pd.DataFrame, current_event: int):
 
 def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players: pd.DataFrame,
                               bank: int, squad_ids: set, team_limit_counts: dict,
-                              team_id: int, current_event: int, key_prefix: str):
+                              team_id: int, current_event: int, key_prefix: str, is_ai: bool = False):
     """Reuses each starting-XI card's already-computed flag (xi_cards, built
     once by render_squad_pitch/build_pitch_cards) rather than re-deriving
     it - the same dot color the pitch already shows. Confirmed (red) and
     early/predicted (yellow) are grouped separately, mirroring the CONFIRMED
     vs EARLY WARNING split ai_team_monitor.py's own email alerts already
     use, for the same reason: a released team sheet and a third-party guess
-    carry very different confidence."""
+    carry very different confidence.
+
+    is_ai=True: same "it decides, doesn't suggest" framing as render_transfer_advice -
+    no confirm/dismiss buttons (those are Ryan's own bookkeeping of what HE did on
+    his own squad; meaningless for an account the model runs autonomously), and the
+    copy states the replacement it's making rather than proposing one (see
+    conversation 2026-08-27: "it is an AI team it is fully autonomous it should be
+    stating what changes it makes")."""
     xi_reset = xi.reset_index(drop=True)
     pairs = list(zip((row for _, row in xi_reset.iterrows()), xi_cards))
     red = [p for p in pairs if p[1]["flag"] == "red"]
@@ -548,7 +555,7 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
     if not red and not yellow:
         return  # nothing flagged - don't render an empty section
 
-    st.markdown("##### Suggested changes")
+    st.markdown("##### Changes it's making" if is_ai else "##### Suggested changes")
 
     team_id_to_name = {t["id"]: t["name"] for t in bootstrap["teams"]}
     bundle = load_match_model_bundle()
@@ -563,7 +570,15 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
         rise_cutoff = price_moves["prob_rise"].quantile(0.9)
         fall_cutoff = price_moves["prob_fall"].quantile(0.9)
 
-    logged_in = getattr(st.user, "is_logged_in", False)
+    # Same predicted_points-based ranking Top 10 Trades (Transfer advice) uses - this used to
+    # call suggest_replacement() instead, a simpler ep_next+ppg proxy over plain all_players,
+    # which could (and did) suggest a DIFFERENT replacement than Top 10 Trades for the same
+    # flagged player. Two sections on the same page disagreeing about the best replacement is
+    # just confusing, not two legitimately different opinions - see conversation 2026-08-27.
+    base = load_base_predictions()
+    preds_all = refresh_predictions_with_live_data(base, bootstrap)
+
+    logged_in = getattr(st.user, "is_logged_in", False) and not is_ai
     google_sub = st.user.sub if logged_in else None
     actions = manager_store.get_suggestion_actions(google_sub, current_event) if logged_in else {}
 
@@ -603,13 +618,16 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
                 if title and url:
                     st.caption(f"📰 [{title}]({url})" + (f" — {date}" if date else ""))
 
-        replacement = squad_alert_checks.suggest_replacement(row, squad_ids, bank, all_players, team_limit_counts)
-        if replacement is None:
+        candidates = squad_alert_checks.suggest_replacements(row, squad_ids, bank, preds_all,
+                                                              team_limit_counts, top_n=1)
+        if candidates.empty:
             st.caption(f"No budget-feasible same-position replacement found within your bank "
                        f"(£{bank/10:.1f}m). Manual look needed.")
             return
+        replacement = candidates.iloc[0]
 
-        st.markdown(f"→ Suggested: **{replacement['web_name']}** (£{replacement['now_cost']/10:.1f}m, "
+        arrow_label = "→ Bringing in:" if is_ai else "→ Suggested:"
+        st.markdown(f"{arrow_label} **{replacement['web_name']}** (£{replacement['now_cost']/10:.1f}m, "
                     f"{replacement['team_name']})")
 
         if not fixture_summary.empty:
@@ -655,7 +673,7 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
                     st.rerun()
                 else:
                     st.error("Couldn't save that just now - try again in a moment.")
-        else:
+        elif not is_ai:
             st.caption("Log in with Google (My Team tab) to record what you actually did about "
                        "this - it'll stop being shown as open once you do.")
 
@@ -900,16 +918,26 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
                    "gameweeks but only commits to this week's move - the rest is a live forecast, "
                    "rerun weekly (see the note below once it runs).")
 
-    default_ft = estimate_free_transfers(team_id)
-    c1, c2 = st.columns([2, 1])
-    free_transfers = c1.number_input(
-        "Free transfers the AI has this week" if is_ai else "Free transfers available",
-        min_value=0, max_value=multi_week_planner.MAX_FREE_TRANSFERS,
-        value=default_ft, key=f"{key_prefix}_ft",
-        help="FPL's API doesn't directly expose this - this is a best-effort estimate from the "
-             "account's transfer history. Correct it if it's wrong; the plan below solves around "
-             "whatever you enter.",
-    )
+    # AI Team: no editable inputs, no button gate - it's autonomous, so it decides its OWN free
+    # transfers/hits/roll-over, not a human tweaking numbers and clicking a button for it (see
+    # conversation 2026-08-27: "it should be choosing whether it rolls over trades, whether it
+    # takes hits, whether it uses its 1 free trade etc. this is the AI's team!"). My Team keeps
+    # both - that's Ryan's own account, his call to make and correct.
+    if is_ai:
+        free_transfers = estimate_free_transfers(team_id)
+        st.caption(f"Rolling **{free_transfers}** free transfer{'s' if free_transfers != 1 else ''} "
+                   "into this week's decision - it manages its own transfer budget.")
+    else:
+        default_ft = estimate_free_transfers(team_id)
+        c1, c2 = st.columns([2, 1])
+        free_transfers = c1.number_input(
+            "Free transfers available",
+            min_value=0, max_value=multi_week_planner.MAX_FREE_TRANSFERS,
+            value=default_ft, key=f"{key_prefix}_ft",
+            help="FPL's API doesn't directly expose this - this is a best-effort estimate from your "
+                 "transfer history. Correct it if it's wrong; the plan below solves around whatever "
+                 "you enter.",
+        )
 
     _render_top_trades(picks_df, history, free_transfers, key_prefix)
 
@@ -937,15 +965,17 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
                  f"break-even - a real hit is too big a chunk of a typical week (~{typical_score:.0f} "
                  "pts) to spend on a razor-thin modelled edge.",
         )
-    if c2.button("Decide this week's move" if is_ai else "Get transfer advice", key=f"{key_prefix}_plan_btn"):
+
+    if is_ai:
+        st.session_state[f"{key_prefix}_show_plan"] = True  # always decides - never waits on a click
+    elif c2.button("Get transfer advice", key=f"{key_prefix}_plan_btn"):
         st.session_state[f"{key_prefix}_show_plan"] = True
 
     if not st.session_state.get(f"{key_prefix}_show_plan"):
         st.caption("Solves an ILP over a filtered candidate pool (top predicted-points players per "
-                   f"position, plus the squad{'' if is_ai else ' you loaded'}) across "
-                   f"{TRANSFER_PLAN_HORIZON_WEEKS} gameweeks, bounded to {SOLVE_TIME_LIMIT_SECONDS}s "
-                   "- not a quick lookup. Cached for 30 minutes afterward, so repeated views don't "
-                   "re-solve.")
+                   f"position, plus the squad you loaded) across {TRANSFER_PLAN_HORIZON_WEEKS} "
+                   f"gameweeks, bounded to {SOLVE_TIME_LIMIT_SECONDS}s - not a quick lookup. Cached "
+                   "for 30 minutes afterward, so repeated views don't re-solve.")
         return
 
     with st.spinner(f"Solving the next {TRANSFER_PLAN_HORIZON_WEEKS} gameweeks "
@@ -969,7 +999,7 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
         st.markdown(f"**IN:** {', '.join(this_week['transfers_in'])}")
         st.markdown(f"**OUT:** {', '.join(this_week['transfers_out'])}")
     else:
-        st.markdown("No transfer recommended this week.")
+        st.markdown("No transfer this week." if is_ai else "No transfer recommended this week.")
     if this_week["hits_taken"]:
         st.caption(f"Costs **-{this_week['hits_taken'] * multi_week_planner.HIT_COST} points** in hits - "
                    f"the plan judged the gain worth it.")
@@ -1153,7 +1183,7 @@ with tab_ai:
                     # weighs them the same way for both teams (see conversation 2026-08-27:
                     # "the AI needs to say what team changes it wants to make not just transfers").
                     render_suggested_changes(xi, xi_cards, all_players, bank, squad_ids, team_limit_counts,
-                                              ai_team_id, current_event, "ai")
+                                              ai_team_id, current_event, "ai", is_ai=True)
                     render_transfer_advice("ai", ai_team_id, picks_df, history, current_event, is_ai=True)
                     render_best_xi_recommendation(picks_df, current_event, is_ai=True)
 
