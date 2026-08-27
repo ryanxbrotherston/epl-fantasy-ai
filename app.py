@@ -388,11 +388,33 @@ st.caption("The dot on each player's badge = starting likelihood (tap it for det
            "highlightly.net's real released lineup (only exists ~30-40min pre-kickoff). With "
            "**predicted** = fpledits.com's third-party guess, refreshed through the week - not official.")
 
+def next_transfer_gameweek(_bootstrap: dict) -> int:
+    """The gameweek any transfer/lineup decision made RIGHT NOW would actually apply to -
+    the first event whose deadline hasn't passed yet (is_next) - NOT
+    fpl_api.current_gameweek()'s own return value, which is_current (its own deadline has
+    ALREADY passed - that's what is_current means once the season is underway; it stays
+    that way for the entire gap until the NEXT gameweek's deadline). Falls back to
+    current_gameweek()'s own id pre-season, before GW1's deadline (is_current is None then,
+    so current_gameweek() already returns the is_next event itself).
+
+    Confirmed live 2026-08-27: without this, "this week's transfer decision"/Best XI/
+    Suggested Changes/the free-transfer count/the sidebar's own "Next deadline" were ALL
+    being computed for the gameweek that had ALREADY finished and locked - the entire week
+    between one gameweek finishing and the next one's deadline passing (e.g. GW1 finished
+    2026-08-21, GW2's deadline isn't until 2026-08-28 - a full week where every one of those
+    features was silently planning for a gameweek nobody could still act on)."""
+    next_ev = next((e["id"] for e in _bootstrap["events"] if e["is_next"]), None)
+    if next_ev is not None:
+        return next_ev
+    return fpl_api.current_gameweek(_bootstrap)["id"]
+
+
 try:
     bootstrap = load_bootstrap()
     gw = fpl_api.current_gameweek(bootstrap)
-    st.sidebar.metric("Next deadline", gw["name"])
-    st.sidebar.caption(gw["deadline_time"].replace("T", " ").replace("Z", " UTC"))
+    next_gw = next((e for e in bootstrap["events"] if e["id"] == next_transfer_gameweek(bootstrap)), gw)
+    st.sidebar.metric("Next deadline", next_gw["name"])
+    st.sidebar.caption(next_gw["deadline_time"].replace("T", " ").replace("Z", " UTC"))
     all_players = fpl_api.players_dataframe(bootstrap)
     live_ok = True
 except Exception as e:
@@ -486,10 +508,15 @@ def render_team_lookup(key_prefix: str, default_id: int | None = None, show_sugg
     team_limit_counts = all_players[all_players["id"].isin(squad_ids)]["team"].value_counts().to_dict()
     bank = history.get("bank", 0)
 
+    # current_event above is the last LOCKED squad (for display) - planning_event is the next
+    # gameweek any transfer/lineup change would actually apply to. These differ for the entire
+    # week between a gameweek finishing and the next one's deadline passing - see
+    # next_transfer_gameweek()'s own docstring for why B2/B3/B4 need the latter, not the former.
+    planning_event = next_transfer_gameweek(bootstrap)
     render_suggested_changes(xi, xi_cards, all_players, bank, squad_ids, team_limit_counts,
-                              int(team_id), current_event, key_prefix)  # B2
-    render_transfer_advice(key_prefix, int(team_id), picks_df, history, current_event)       # B3
-    render_best_xi_recommendation(picks_df, current_event)                                   # B4
+                              int(team_id), planning_event, key_prefix)  # B2
+    render_transfer_advice(key_prefix, int(team_id), picks_df, history, planning_event)       # B3
+    render_best_xi_recommendation(picks_df, planning_event)                                  # B4
     render_season_history(int(team_id))                                                      # B5
     render_watchlist()                                                                        # B7
 
@@ -560,7 +587,12 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
     team_id_to_name = {t["id"]: t["name"] for t in bootstrap["teams"]}
     bundle = load_match_model_bundle()
     avg_lambda = load_league_avg_lambda(bundle, tuple(t["name"] for t in bootstrap["teams"]))
-    ticker = fixture_ticker.build_ticker(load_fixtures_df(bootstrap), bundle, avg_lambda, n_gameweeks=3)
+    # Filtered to gameweek >= current_event (the PLANNING gameweek, per this function's callers -
+    # see next_transfer_gameweek()) before build_ticker's own "first n_gameweeks found" logic runs -
+    # otherwise "next 3" silently included an already-finished gameweek at the front of the window.
+    upcoming_fixtures = load_fixtures_df(bootstrap)
+    upcoming_fixtures = upcoming_fixtures[upcoming_fixtures["event"] >= current_event]
+    ticker = fixture_ticker.build_ticker(upcoming_fixtures, bundle, avg_lambda, n_gameweeks=3)
     fixture_summary = fixture_ticker.team_summary(ticker) if not ticker.empty else pd.DataFrame()
 
     price_moves = price_predictor.predict_price_moves(all_players, bootstrap["total_players"])
@@ -618,36 +650,17 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
                 if title and url:
                     st.caption(f"📰 [{title}]({url})" + (f" — {date}" if date else ""))
 
-        candidates = squad_alert_checks.suggest_replacements(row, squad_ids, bank, preds_all,
-                                                              team_limit_counts, top_n=1)
-        if candidates.empty:
-            st.caption(f"No budget-feasible same-position replacement found within your bank "
-                       f"(£{bank/10:.1f}m). Manual look needed.")
-            return
-        replacement = candidates.iloc[0]
-
-        arrow_label = "→ Bringing in:" if is_ai else "→ Suggested:"
-        st.markdown(f"{arrow_label} **{replacement['web_name']}** (£{replacement['now_cost']/10:.1f}m, "
-                    f"{replacement['team_name']})")
-
-        if not fixture_summary.empty:
-            attacking = row["position"] in ("MID", "FWD")
-            metric = "avg_attacking_difficulty" if attacking else "avg_defensive_difficulty"
-            label = "attacking" if attacking else "defensive"
-            out_name, in_name = team_id_to_name.get(row["team"]), replacement["team_name"]
-            if out_name in fixture_summary.index and in_name in fixture_summary.index:
-                # This is a FIXTURE DIFFICULTY index, not a price or points - 1.0 = league-average
-                # difficulty, higher = tougher run, lower = easier (see fixture_ticker.py). Got
-                # mistaken for a price by a real user (no unit shown next to a bare decimal, and
-                # this app shows actual prices elsewhere as "£X.Xm") - the metric label and a help
-                # tooltip now spell out what it is instead of a bare number.
-                difficulty_help = ("Fixture difficulty over the next 3 gameweeks - 1.0 = league "
-                                    "average, higher = tougher run, lower = easier. NOT a price.")
-                fc1, fc2 = st.columns(2)
-                fc1.metric(f"{row['web_name']} next 3 fixtures ({label} difficulty)",
-                           f"{fixture_summary.loc[out_name, metric]:.2f}", help=difficulty_help)
-                fc2.metric(f"{replacement['web_name']} next 3 fixtures ({label} difficulty)",
-                           f"{fixture_summary.loc[in_name, metric]:.2f}", help=difficulty_help)
+        # No replacement pick rendered here anymore - this used to suggest one independently
+        # of Top 10 Trades below, and the two could (and did) disagree, since "the best
+        # replacement for THIS one flagged player" and "the single best trade across the
+        # whole squad" are genuinely different questions with potentially different answers.
+        # Two sections on the same page proposing different players was confusing, not two
+        # legitimately different opinions worth keeping side by side (see conversation
+        # 2026-08-27: "differences between suggested changes and trade top 10... doubling up
+        # and becoming overwhelming"). This section now only ever states the ISSUE - Top 10
+        # Trades (in Transfer advice / This week's transfer decision, below) is the one place
+        # a replacement gets recommended.
+        st.caption("See Top 10 trades below for the best replacement.")
 
         if price_by_id is not None:
             if row["element"] in price_by_id.index:
@@ -655,9 +668,6 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
                 if pd.notna(v) and v >= fall_cutoff:
                     st.caption(f"💰 {row['web_name']}'s price looks likely to fall soon - "
                                f"consider selling before it does.")
-            if replacement["id"] in price_by_id.index:
-                v = price_by_id.loc[replacement["id"], "prob_rise"]
-                if pd.notna(v) and v >= rise_cutoff:
                     st.caption(f"💰 {replacement['web_name']}'s price looks likely to rise soon - "
                                f"consider buying now before it does.")
 
@@ -1020,7 +1030,8 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
 
 # ---------- My Team only: B4, best XI from the existing 15 ----------
 
-def render_best_xi_recommendation(picks_df: pd.DataFrame, target_event: int, is_ai: bool = False):
+def render_best_xi_recommendation(picks_df: pd.DataFrame, target_event: int, is_ai: bool = False,
+                                    team_id: int | None = None, history: dict | None = None):
     st.markdown("##### Best XI this week")
     st.caption(f"Who should start from {'the' if is_ai else 'your'} existing 15 - not a transfer "
                f"suggestion, see {'the transfer decision' if is_ai else 'Transfer advice'} above for that.")
@@ -1028,6 +1039,26 @@ def render_best_xi_recommendation(picks_df: pd.DataFrame, target_event: int, is_
     base = load_base_predictions()
     preds_all = refresh_predictions_with_live_data(base, bootstrap)
     squad_ids = set(picks_df["element"])
+
+    # AI Team's transfer decision is a real decision, not an optional suggestion a human might
+    # skip - so its Best XI should reflect the squad AFTER that transfer, not the one from
+    # before it (see conversation 2026-08-27: "best xi on the AI screen does not reflect what
+    # changes were suggested, it should be inclusive of this"). Reuses the exact same cached
+    # solve render_transfer_advice() already ran for this same team/gameweek (identical args =
+    # same cache key), so this doesn't re-solve anything - and falls back to the pre-transfer
+    # squad if that solve can't be reproduced for any reason, rather than blocking Best XI on it.
+    if is_ai and team_id is not None and history is not None:
+        try:
+            free_transfers = estimate_free_transfers(team_id)
+            plan_df = solve_transfer_plan(
+                tuple(sorted(picks_df["element"])), int(history.get("bank", 0)), int(free_transfers),
+                target_event, team_id, bootstrap, all_players, True,
+            )
+            this_week = plan_df.iloc[0]
+            squad_ids = (squad_ids - set(this_week["transfers_out_ids"])) | set(this_week["transfers_in_ids"])
+        except Exception:
+            pass
+
     squad_for_opt = preds_all[preds_all["id"].isin(squad_ids)]
     if len(squad_for_opt) < 15:
         st.caption("Not all 15 squad players have a model prediction available (e.g. a very recent "
@@ -1044,7 +1075,10 @@ def render_best_xi_recommendation(picks_df: pd.DataFrame, target_event: int, is_
 
     actual_predicted = squad_for_opt[squad_for_opt["id"].isin(actual_starting_ids)]["predicted_points"].sum()
     gain = xi_rec["predicted_points"].sum() - actual_predicted
-    name_of = dict(zip(squad_for_opt["id"], squad_for_opt["web_name"]))
+    # Full preds_all, not just squad_for_opt - a player just transferred OUT (is_ai path above)
+    # is still in actual_starting_ids (the squad as it stood before that transfer) but no longer
+    # in squad_for_opt, and would otherwise show as "?" here instead of their real name.
+    name_of = dict(zip(preds_all["id"], preds_all["web_name"]))
     bench_in = [name_of.get(i, "?") for i in (rec_ids - actual_starting_ids)]
     start_out = [name_of.get(i, "?") for i in (actual_starting_ids - rec_ids)]
     st.info(f"{'Its' if is_ai else 'Your'} best XI this week is a **{formation_rec}** — start "
@@ -1177,15 +1211,21 @@ with tab_ai:
                     team_limit_counts = all_players[all_players["id"].isin(squad_ids)]["team"].value_counts().to_dict()
                     bank = history.get("bank", 0)
 
+                    # current_event above is the last LOCKED squad (for display); planning_event
+                    # is the next gameweek any transfer/lineup change would actually apply to -
+                    # see next_transfer_gameweek()'s docstring for why B2/B3/B4 need the latter.
+                    planning_event = next_transfer_gameweek(bootstrap)
+
                     # Same B2/B3/B4 suite My Team gets (render_team_lookup, below) - the AI tab
                     # previously only showed transfer advice, so injury-driven bench/replace
                     # decisions (not just buy/sell) were invisible here even though the model
                     # weighs them the same way for both teams (see conversation 2026-08-27:
                     # "the AI needs to say what team changes it wants to make not just transfers").
                     render_suggested_changes(xi, xi_cards, all_players, bank, squad_ids, team_limit_counts,
-                                              ai_team_id, current_event, "ai", is_ai=True)
-                    render_transfer_advice("ai", ai_team_id, picks_df, history, current_event, is_ai=True)
-                    render_best_xi_recommendation(picks_df, current_event, is_ai=True)
+                                              ai_team_id, planning_event, "ai", is_ai=True)
+                    render_transfer_advice("ai", ai_team_id, picks_df, history, planning_event, is_ai=True)
+                    render_best_xi_recommendation(picks_df, planning_event, is_ai=True,
+                                                   team_id=ai_team_id, history=history)
 
 
 with tab_mine:

@@ -240,18 +240,29 @@ def plan(
 
     plan_df = _extract_plan(gameweeks, players, projection_table, squad, starting, captain,
                              transfer_in, transfer_out, wildcard, freehit, bboost, triple_capt,
-                             hits, free_transfers_avail)
+                             hits, free_transfers_avail, current_squad_ids)
     plan_df.attrs["proven_optimal"] = prob.sol_status == pulp.LpSolutionOptimal
     return plan_df
 
 
 def _extract_plan(gameweeks, players, projection_table, squad, starting, captain,
                    transfer_in, transfer_out, wildcard, freehit, bboost, triple_capt,
-                   hits, free_transfers_avail):
+                   hits, free_transfers_avail, current_squad_ids):
     plan_rows = []
+    prev_squad_ids = set(current_squad_ids)
     for gw in gameweeks:
-        ins = [p for p in players if transfer_in[(p, gw)].value() == 1]
-        outs = [p for p in players if transfer_out[(p, gw)].value() == 1]
+        # Derived from actual squad membership, NOT the transfer_in/transfer_out indicator
+        # variables - during a wildcard/free hit week, any_wildcard_or_freehit's slack term
+        # lets squad[] change freely without the solver having any incentive to also set those
+        # indicators to match (they're not what the objective/constraints actually gate that
+        # week), so a real squad-out-with-no-corresponding-transfer_out=1 is possible and DID
+        # happen live: "IN: Thiago, Dubravka" with an empty "OUT:" during a wildcard week (see
+        # conversation 2026-08-27). Comparing this week's squad to last week's squad directly
+        # is correct regardless of which chip (if any) enabled the change.
+        this_squad_ids = {p for p in players if squad[(p, gw)].value() == 1}
+        ins = sorted(this_squad_ids - prev_squad_ids)
+        outs = sorted(prev_squad_ids - this_squad_ids)
+        prev_squad_ids = this_squad_ids
         cap = next((p for p in players if captain[(p, gw)].value() == 1), None)
         chip_used = None
         for cid, gw2 in wildcard:
@@ -272,6 +283,10 @@ def _extract_plan(gameweeks, players, projection_table, squad, starting, captain
             "gameweek": gw,
             "transfers_in": [name_of(p) for p in ins],
             "transfers_out": [name_of(p) for p in outs],
+            "transfers_in_ids": ins,   # same players as transfers_in, as ids - callers that need
+            "transfers_out_ids": outs,  # to apply the swap unambiguously (e.g. feeding the
+                                          # resulting squad into a best-XI pick) shouldn't have to
+                                          # re-match on web_name, which isn't guaranteed unique.
             "hits_taken": int(hits[gw].value()),
             "captain": name_of(cap) if cap else None,
             "chip": chip_used,
