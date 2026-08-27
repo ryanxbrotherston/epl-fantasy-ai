@@ -445,7 +445,9 @@ def render_team_lookup(key_prefix: str, default_id: int | None = None, show_sugg
     get the plain lookup/pitch with nothing below it."""
     team_id = st.number_input("FPL Team ID", min_value=1, step=1, value=default_id, key=f"{key_prefix}_id",
                                help="Find this in the FPL site URL when viewing 'Pick Team' or 'Gameweek history'.")
-    if not st.button("Load team", key=f"{key_prefix}_load"):
+    if st.button("Load team", key=f"{key_prefix}_load"):
+        st.session_state[f"{key_prefix}_loaded"] = True
+    if not st.session_state.get(f"{key_prefix}_loaded"):
         return
 
     if not live_ok:
@@ -780,10 +782,10 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
                    f"the plan judged the gain worth it.")
     if this_week["captain"]:
         st.markdown(f"**Captain:** {this_week['captain']}")
-    if this_week["chip"]:
+    if pd.notna(this_week["chip"]):
         st.markdown(f"**Chip this week:** {this_week['chip']}")
 
-    future_chip = next((r for _, r in plan_df.iloc[1:].iterrows() if r["chip"]), None)
+    future_chip = next((r for _, r in plan_df.iloc[1:].iterrows() if pd.notna(r["chip"])), None)
     if future_chip is not None:
         st.caption(f"Plan currently looks toward using **{future_chip['chip']}** around "
                    f"GW{future_chip['gameweek']}.")
