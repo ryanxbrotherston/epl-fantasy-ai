@@ -928,17 +928,26 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
                    "gameweeks but only commits to this week's move - the rest is a live forecast, "
                    "rerun weekly (see the note below once it runs).")
 
-    # AI Team: no editable inputs, no button gate - it's autonomous, so it decides its OWN free
-    # transfers/hits/roll-over, not a human tweaking numbers and clicking a button for it (see
-    # conversation 2026-08-27: "it should be choosing whether it rolls over trades, whether it
-    # takes hits, whether it uses its 1 free trade etc. this is the AI's team!"). My Team keeps
-    # both - that's Ryan's own account, his call to make and correct.
+    # AI Team still gets an editable free-transfer count - but framed as a FACT it's told, not a
+    # strategy it's handed: FPL's API doesn't expose "free transfers currently available"
+    # directly, only history to replay (estimate_free_transfers()), and that estimate can be
+    # wrong. Whether to actually USE a transfer, hold it, or take a hit stays the model's own
+    # call either way - no button gate, no hits checkbox here, unlike My Team (see conversation
+    # 2026-08-27: "I want to be able to input into a box titled total trades available this
+    # week to help the AI then make its decision on whether it uses, holds, or takes hits based
+    # on this information" - correcting the fact it's reasoning from, not overriding the
+    # reasoning itself).
+    default_ft = estimate_free_transfers(team_id)
     if is_ai:
-        free_transfers = estimate_free_transfers(team_id)
-        st.caption(f"Rolling **{free_transfers}** free transfer{'s' if free_transfers != 1 else ''} "
-                   "into this week's decision - it manages its own transfer budget.")
+        free_transfers = st.number_input(
+            "Total trades available this week",
+            min_value=0, max_value=multi_week_planner.MAX_FREE_TRANSFERS,
+            value=default_ft, key=f"{key_prefix}_ft",
+            help="FPL's API doesn't directly expose this - this is a best-effort estimate from the "
+                 "account's transfer history. Correct it if it's wrong; the model still decides "
+                 "whether to use, hold, or take a hit based on whatever number is actually correct.",
+        )
     else:
-        default_ft = estimate_free_transfers(team_id)
         c1, c2 = st.columns([2, 1])
         free_transfers = c1.number_input(
             "Free transfers available",
