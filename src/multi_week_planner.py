@@ -28,6 +28,17 @@ SQUAD_SIZE = 15
 POSITION_QUOTAS = {"GK": 2, "DEF": 5, "MID": 5, "FWD": 3}
 TEAM_LIMIT = 3
 HIT_COST = 4  # points per transfer beyond available free transfers
+SQUAD_QUALITY_BONUS = 0.02  # tiny per-player-per-gameweek nudge toward carrying available (not
+                             # injured/suspended) players in the 15-man SQUAD, not just the
+                             # starting 11. Rationale: a benched injured player already scores 0
+                             # either way (starting[]<=squad[] means bench never hits the points
+                             # objective), so on pure points there's no pressure to ever clear one
+                             # out - but a "solid overall team" carries real bench depth/insurance,
+                             # not permanent passengers (see conversation 2026-08-27). Deliberately
+                             # tiny (0.02 * up to 3 gameweeks = 0.06 total) so it only ever breaks
+                             # a genuine tie or nudges a free, no-hit-needed transfer - it must
+                             # never be big enough to justify a hit or override a real points edge
+                             # (hit_confidence_margin alone is ~7pts; this is two orders smaller).
 MAX_FREE_TRANSFERS = 5  # 1/week + up to 4 banked (FPL's max_extra_free_transfers=4)
 
 
@@ -109,6 +120,11 @@ def plan(
     # below, so triple_capt_active is effectively binary too).
     capt_and_tc = {(p, gw): pulp.LpVariable(f"capttc_{p}_{gw}", cat="Binary") for p in players for gw in gameweeks}
 
+    available_of = {
+        row["id"]: bool(row["available"]) if "available" in projection_table.columns else True
+        for _, row in projection_table.iterrows()
+    }
+
     objective_terms = []
     for gw in gameweeks:
         col = gw_cols[gw]
@@ -118,6 +134,8 @@ def plan(
             cap_bonus = pts * captain[(p, gw)]
             tc_bonus = pts * capt_and_tc[(p, gw)]
             objective_terms.append(base + cap_bonus + tc_bonus)
+            if available_of.get(p, True):
+                objective_terms.append(SQUAD_QUALITY_BONUS * squad[(p, gw)])
         objective_terms.append(-(HIT_COST + hit_confidence_margin) * hits[gw])
     prob += pulp.lpSum(objective_terms)
 

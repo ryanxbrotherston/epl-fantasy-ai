@@ -35,10 +35,12 @@ def build_projection_table(squad_predictions: pd.DataFrame, fixtures: pd.DataFra
                              team_name_col: str = "team_name") -> pd.DataFrame:
     """squad_predictions needs: id, web_name, position, team_name, now_cost,
     predicted_points (the season-baseline blended prediction, e.g. from
-    squad_optimizer.load_predictions()). now_cost is carried through
-    unmodified (not fixture-adjusted, unlike predicted_points) - the
-    planner's budget constraint needs it on this table since it's the one
-    passed into multi_week_planner.plan().
+    squad_optimizer.load_predictions()), available (bool - see
+    app.py's refresh_predictions_with_live_data()). now_cost is carried
+    through unmodified (not fixture-adjusted, unlike predicted_points) -
+    the planner's budget constraint needs it on this table since it's the
+    one passed into multi_week_planner.plan(). available is carried
+    through unmodified too, for plan()'s squad-quality nudge (see there).
     Returns a wide table: one row per player, one column per gameweek.
     """
     from match_model import predict_lambda
@@ -46,7 +48,12 @@ def build_projection_table(squad_predictions: pd.DataFrame, fixtures: pd.DataFra
 
     fixture_map = build_gw_fixture_map(fixtures, gameweeks)
 
-    result = squad_predictions[["id", "web_name", "position", team_name_col, "now_cost", "predicted_points"]].copy()
+    cols = ["id", "web_name", "position", team_name_col, "now_cost", "predicted_points"]
+    if "available" in squad_predictions.columns:
+        cols.append("available")
+    result = squad_predictions[cols].copy()
+    if "available" not in result.columns:
+        result["available"] = True  # caller didn't supply it - assume fit rather than penalize blind
     for gw in gameweeks:
         col = []
         for _, player in result.iterrows():
