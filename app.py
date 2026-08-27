@@ -656,6 +656,14 @@ SOLVE_TIME_LIMIT_SECONDS = 90  # bounded safety net ON TOP OF the pool filter ab
                                 # it - CBC returns its best feasible solution so far if this is hit
                                 # without having proven optimality; render_transfer_advice() discloses
                                 # that rather than presenting a truncated solve with full confidence.
+TRANSFER_PLAN_HORIZON_WEEKS = 3  # was 5 - each extra gameweek roughly doubles the ILP's decision
+                                  # variables (squad/starting/captain/transfer per player PER week),
+                                  # and the 5-week solve was regularly hitting SOLVE_TIME_LIMIT_SECONDS
+                                  # without proving optimality (see conversation 2026-08-27: "5 weeks
+                                  # is causing too much delay"). Only week 1 is ever actually commit-
+                                  # ted to anyway - the rest is disclosed as a live forecast, rerun
+                                  # weekly - so a shorter horizon trades a bit of lookahead (mainly
+                                  # chip-timing foresight) for solves that reliably finish.
 
 
 def filter_candidate_pool(preds_all: pd.DataFrame, current_squad_ids: set,
@@ -709,7 +717,7 @@ def solve_transfer_plan(squad_ids_tuple: tuple, bank: int, free_transfers: int, 
     avg_lambda = load_league_avg_lambda(bundle, tuple(t["name"] for t in _bootstrap["teams"]))
     fixtures_df = load_fixtures_df(_bootstrap)
 
-    gameweeks = [g for g in range(target_event, target_event + 5) if g <= 38]
+    gameweeks = [g for g in range(target_event, target_event + TRANSFER_PLAN_HORIZON_WEEKS) if g <= 38]
     projection_table = multi_week_projections.build_projection_table(
         preds_all, fixtures_df, gameweeks, bundle, avg_lambda,
     )
@@ -734,14 +742,14 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
     than reusing My Team's "here's what you should do" framing."""
     if is_ai:
         st.markdown("##### This week's transfer decision")
-        st.caption("What the model is bringing in this week, and why. Solves the next 5 gameweeks "
-                   "but only commits to this week's move - the rest is a live forecast, rerun weekly "
-                   "(see the note below once it runs).")
+        st.caption(f"What the model is bringing in this week, and why. Solves the next "
+                   f"{TRANSFER_PLAN_HORIZON_WEEKS} gameweeks but only commits to this week's move - "
+                   "the rest is a live forecast, rerun weekly (see the note below once it runs).")
     else:
         st.markdown("##### Transfer advice")
-        st.caption("Who to bring in this week, and why. Solves the next 5 gameweeks but only commits "
-                   "to this week's move - the rest is a live forecast, rerun weekly (see the note below "
-                   "once it runs).")
+        st.caption(f"Who to bring in this week, and why. Solves the next {TRANSFER_PLAN_HORIZON_WEEKS} "
+                   "gameweeks but only commits to this week's move - the rest is a live forecast, "
+                   "rerun weekly (see the note below once it runs).")
 
     default_ft = estimate_free_transfers(team_id)
     c1, c2 = st.columns([2, 1])
@@ -782,12 +790,14 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
 
     if not st.session_state.get(f"{key_prefix}_show_plan"):
         st.caption("Solves an ILP over a filtered candidate pool (top predicted-points players per "
-                   f"position, plus the squad{'' if is_ai else ' you loaded'}) across 5 gameweeks, "
-                   f"bounded to {SOLVE_TIME_LIMIT_SECONDS}s - not a quick lookup. Cached for 30 "
-                   "minutes afterward, so repeated views don't re-solve.")
+                   f"position, plus the squad{'' if is_ai else ' you loaded'}) across "
+                   f"{TRANSFER_PLAN_HORIZON_WEEKS} gameweeks, bounded to {SOLVE_TIME_LIMIT_SECONDS}s "
+                   "- not a quick lookup. Cached for 30 minutes afterward, so repeated views don't "
+                   "re-solve.")
         return
 
-    with st.spinner(f"Solving the next 5 gameweeks (bounded to {SOLVE_TIME_LIMIT_SECONDS}s)..."):
+    with st.spinner(f"Solving the next {TRANSFER_PLAN_HORIZON_WEEKS} gameweeks "
+                    f"(bounded to {SOLVE_TIME_LIMIT_SECONDS}s)..."):
         try:
             plan_df = solve_transfer_plan(
                 tuple(sorted(picks_df["element"])), int(history.get("bank", 0)), int(free_transfers),
