@@ -157,6 +157,22 @@ def load_confirmed_lineups_for_gameweek(_bootstrap: dict, target_event: int) -> 
     return result
 
 
+@st.cache_data(ttl=21600)  # 6h - injury updates/news don't turn over nearly as fast as lineups,
+                            # and this is only ever called for players already flagged in a
+                            # loaded squad (not the full player pool), so the combination keeps
+                            # this well within Highlightly's 100 req/day free tier - see
+                            # conversation 2026-08-27 on why calls are deliberately kept scoped
+                            # like this rather than pre-fetched for every player.
+def load_player_injury_news(first_name: str, second_name: str, web_name: str) -> dict | None:
+    """{'injuries': [...], 'related_news': [...]} for one flagged player, or
+    None if Highlightly has no name match / is unreachable - render_suggested_changes()
+    treats that as "nothing extra to show," never as "definitely no injury/news.\""""
+    player_id = confirmed_lineup.find_player_id(first_name, second_name, web_name)
+    if player_id is None:
+        return None
+    return confirmed_lineup.get_player_injury_news(player_id)
+
+
 @st.cache_resource
 def load_match_model_bundle() -> dict:
     """match_model.pkl - the fitted attack/defence model fixture_ticker.py and
@@ -541,8 +557,29 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
         fall_cutoff = price_moves["prob_fall"].quantile(0.9)
 
     def render_one(row, card):
-        replacement = squad_alert_checks.suggest_replacement(row, squad_ids, bank, all_players, team_limit_counts)
         st.markdown(f"**{card['position']} {row['web_name']}** — {card['basis']}: {card['detail']}")
+
+        # Licensed injury/news detail (Highlightly) for this ONE flagged player only - never
+        # the whole squad or candidate pool, to stay well within its free-tier request budget.
+        # A player name-match miss or an unreachable API both just mean "nothing extra to show"
+        # here - the core alert above already stands on FPL's own status either way.
+        try:
+            first, second = all_players.set_index("id").loc[row["element"], ["first_name", "second_name"]]
+            news_data = load_player_injury_news(first, second, row["web_name"])
+        except Exception:
+            news_data = None
+        if news_data:
+            injury = confirmed_lineup.current_injury(news_data["injuries"])
+            if injury:
+                reason, to_date = injury.get("reason"), injury.get("toDate")
+                back_by = f"expected back around {to_date}" if to_date else "no return date given yet"
+                st.caption(f"🩺 {reason} — {back_by} (via Highlightly)")
+            for article in news_data["related_news"][:3]:
+                title, url, date = article.get("title"), article.get("url"), article.get("date")
+                if title and url:
+                    st.caption(f"📰 [{title}]({url})" + (f" — {date}" if date else ""))
+
+        replacement = squad_alert_checks.suggest_replacement(row, squad_ids, bank, all_players, team_limit_counts)
         if replacement is None:
             st.caption(f"No budget-feasible same-position replacement found within your bank "
                        f"(£{bank/10:.1f}m). Manual look needed.")

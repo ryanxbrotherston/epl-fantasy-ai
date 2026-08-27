@@ -35,6 +35,7 @@ AI_TEAM_ID/ALERT_EMAIL_*, not Streamlit Cloud's separate Secrets manager.
 """
 
 import os
+from datetime import datetime
 
 import requests
 
@@ -136,6 +137,70 @@ def get_confirmed_lineup_names(highlightly_match_id: int) -> dict | None:
     if not starters and not bench:
         return None  # not released yet
     return {"starters": starters, "bench": bench}
+
+
+def find_player_id(fpl_first_name: str, fpl_second_name: str, fpl_web_name: str) -> int | None:
+    """Highlightly's own player id for a real FPL player, matched by name -
+    same imperfect-but-treated-as-'no data' philosophy as player_confirmed_status()
+    below (different ID schemes, no shared key). Tries the full name first
+    (most precise), then falls back to web_name (surname) since Highlightly's
+    own /players?name= search does its own fuzzy matching server-side and a
+    bare surname often succeeds where a full-name string doesn't."""
+    full_name = f"{fpl_first_name} {fpl_second_name}"
+    full_norm, web_norm = _normalize(full_name), _normalize(fpl_web_name)
+    for query in (full_name, fpl_web_name):
+        results = _get("/players", {"name": query, "limit": 10})
+        if not results:
+            continue
+        for r in results:
+            name_norm = _normalize(r.get("fullName") or r.get("name") or "")
+            if name_norm == full_norm or web_norm in name_norm or name_norm.endswith(web_norm):
+                return r["id"]
+    return None
+
+
+def get_player_injury_news(highlightly_player_id: int) -> dict | None:
+    """{'injuries': [...], 'related_news': [...]} straight from Highlightly's
+    own licensed player-detail endpoint - real dated injury records (reason,
+    fromDate, toDate, missedGames) and real article title/url/date entries,
+    NOT scraped from any news site directly (BBC's robots.txt explicitly
+    forbids scraping/data-mining their content, and premierleague.com's own
+    Terms of Use forbid reproducing or "creating a database" from theirs -
+    see conversation 2026-08-27 for the full trail on why this app only
+    ever sources news/injury data through a licensed API, never a scraper).
+    None if unreachable - callers should treat that as "no data available
+    right now," never as "no injury/no news.\""""
+    data = _get(f"/players/{highlightly_player_id}")
+    if data is None:
+        return None
+    return {
+        "injuries": data.get("injuries") or [],
+        "related_news": data.get("relatedNews") or [],
+    }
+
+
+def _parse_injury_date(date_str: str | None):
+    if not date_str:
+        return None
+    try:
+        return datetime.strptime(date_str, "%d.%m.%Y")
+    except ValueError:
+        return None
+
+
+def current_injury(injuries: list[dict]) -> dict | None:
+    """The most recent entry in a player's injuries array (by fromDate) - a
+    reasonable proxy for "the injury behind their current status", since
+    Highlightly's own docs don't distinguish past-vs-ongoing with a boolean
+    (an ongoing injury's toDate is just left blank/future). FPL's own status
+    field is still the source of truth for WHETHER they're currently out;
+    this only supplies the extra reason/date detail once we already know
+    they are. None if the list is empty or every date fails to parse."""
+    dated = [(i, _parse_injury_date(i.get("fromDate"))) for i in injuries]
+    dated = [(i, d) for i, d in dated if d is not None]
+    if not dated:
+        return None
+    return max(dated, key=lambda pair: pair[1])[0]
 
 
 def player_confirmed_status(fpl_first_name: str, fpl_second_name: str, fpl_web_name: str,
