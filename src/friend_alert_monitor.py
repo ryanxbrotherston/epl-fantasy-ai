@@ -53,6 +53,7 @@ import fpl_api
 import lineup_predictor
 import manager_store
 from squad_alert_checks import (
+    deadline_has_passed,
     flag_problem_players,
     flag_bench_likely_players,
     flag_confirmed_benched_players,
@@ -220,6 +221,15 @@ def main():
     bootstrap = fpl_api.get_bootstrap_static()
     gw = fpl_api.current_gameweek(bootstrap)
     target_event = gw["id"]
+
+    if deadline_has_passed(gw):
+        # See ai_team_monitor.py's identical check - every alert here tells its recipient to
+        # make a change "before the deadline above"; past that point nobody opted in can act on
+        # it, so skip rather than keep emailing everyone hourly for the rest of the gameweek.
+        print(f"GW{target_event}'s deadline ({gw['deadline_time']}) has already passed - "
+              f"nothing left to act on until GW{target_event + 1}. Skipping.")
+        return
+
     all_players = fpl_api.players_dataframe(bootstrap)
 
     # Same early-signal fetch ai_team_monitor.py uses - no separate snapshot

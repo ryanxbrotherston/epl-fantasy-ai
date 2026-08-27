@@ -29,6 +29,19 @@ UNAVAILABLE_STATUSES = {"i", "s", "u", "n"}
 DOUBTFUL_THRESHOLD = 50  # chance_of_playing_next_round % below which a "doubtful" player still gets flagged
 
 
+def deadline_has_passed(gw: dict) -> bool:
+    """True once `gw`'s (fpl_api.current_gameweek()'s return value) transfer deadline is in the
+    past. fpl_api.current_gameweek() keeps returning the SAME event (is_current=True) for the
+    entire rest of that gameweek, well past its own deadline - individual fixtures kick off at
+    different times all week, but the one deadline that actually locks transfers/lineup changes
+    already passed. Both monitors' alert emails suggest a change to make "before the deadline
+    above" - past that point the suggestion is no longer actionable, so callers should skip
+    alerting entirely rather than keep emailing hourly for the rest of the gameweek (see
+    conversation 2026-08-27: exactly this caused an hourly inbox-clogging alert loop)."""
+    deadline = datetime.fromisoformat(gw["deadline_time"].replace("Z", "+00:00"))
+    return datetime.now(timezone.utc) >= deadline
+
+
 def flag_problem_players(picks_df: pd.DataFrame) -> pd.DataFrame:
     """Squad members who are injured/suspended/unavailable, or doubtful below
     threshold, and are in the starting XI (multiplier > 0, i.e. not benched)."""

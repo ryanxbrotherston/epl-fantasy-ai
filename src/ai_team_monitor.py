@@ -53,6 +53,7 @@ import fpl_api
 import lineup_predictor
 import lineup_prediction_log
 from squad_alert_checks import (
+    deadline_has_passed,
     flag_problem_players,
     flag_bench_likely_players,
     flag_confirmed_benched_players,
@@ -117,6 +118,17 @@ def main():
         if score:
             print(f"GW{target_event - 1} early-prediction accuracy: "
                   f"{score['correct']}/{score['total']} ({score['accuracy']:.1%})")
+
+    if deadline_has_passed(gw):
+        # Every alert below tells Ryan to make a change "before the deadline above" - once
+        # that's passed, transfers/lineup changes are locked for the WHOLE gameweek regardless
+        # of when individual fixtures kick off, so there's nothing left to act on. Without this,
+        # the hourly cron kept finding "new" issues (fpledits.com's predicted lineup and
+        # highlightly.net's confirmed team sheet both keep updating fixture-by-fixture all
+        # through the gameweek) and emailing about them anyway - see conversation 2026-08-27.
+        print(f"GW{target_event}'s deadline ({gw['deadline_time']}) has already passed - "
+              f"nothing left to act on until GW{target_event + 1}. Skipping.")
+        return
 
     result = fpl_api.team_picks_dataframe(ai_team_id, target_event, bootstrap)
     if result is None:
