@@ -344,8 +344,23 @@ def refresh_predictions_with_live_data(base_preds: pd.DataFrame, bootstrap: dict
     chance = pd.to_numeric(merged["chance_of_playing_next_round"], errors="coerce")
     doubtful = merged["status"].eq("d") & chance.notna()
     merged.loc[doubtful, "predicted_points"] *= (chance[doubtful] / 100)
-    merged["available"] = ~merged["status"].isin(UNAVAILABLE_STATUSES)
+
+    unavailable = merged["status"].isin(UNAVAILABLE_STATUSES)
+    merged["available"] = ~unavailable
+
     merged = apply_price_bias_correction(merged)
+
+    # Genuinely unavailable (injured/suspended/left club) players were previously left with
+    # their full blended predicted_points (plus whatever the price-bias correction just added
+    # on top) - the model/ep_next/ppg blend has no idea they can't play at all, so a squad
+    # member out injured could still show a positive score and get silently kept (or even
+    # started) by the same solver that's supposed to be deciding whether to transfer them out.
+    # Zeroing this out AFTER the price correction (not before - it'd just get partially undone)
+    # is what actually makes the transfer planner (and its hit_confidence_margin bar - see
+    # typical_gameweek_score()) correctly weigh "this squad is carrying N injuries, each
+    # currently worth 0" as the real, large points swing it is, rather than needing a separate
+    # injury-count heuristic bolted on top.
+    merged.loc[unavailable, "predicted_points"] = 0.0
     return merged
 
 
