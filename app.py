@@ -575,8 +575,10 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
             icon = "✅" if prior_action == "done" else "⏭️"
             st.markdown(f"**{card['position']} {row['web_name']}** — {icon} you marked this **{verb}**")
             if st.button("Undo", key=f"undo_{issue_key}"):
-                manager_store.clear_suggestion_action(google_sub, current_event, issue_key)
-                st.rerun()
+                if manager_store.clear_suggestion_action(google_sub, current_event, issue_key):
+                    st.rerun()
+                else:
+                    st.error("Couldn't save that just now - try again in a moment.")
             return
 
         st.markdown(f"**{card['position']} {row['web_name']}** — {card['basis']}: {card['detail']}")
@@ -644,11 +646,15 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
         if logged_in:
             bcol1, bcol2 = st.columns(2)
             if bcol1.button("✅ I made this change", key=f"done_{issue_key}"):
-                manager_store.set_suggestion_action(google_sub, current_event, issue_key, "done")
-                st.rerun()
+                if manager_store.set_suggestion_action(google_sub, current_event, issue_key, "done"):
+                    st.rerun()
+                else:
+                    st.error("Couldn't save that just now - try again in a moment.")
             if bcol2.button("⏭️ I'm skipping this", key=f"skip_{issue_key}"):
-                manager_store.set_suggestion_action(google_sub, current_event, issue_key, "skipped")
-                st.rerun()
+                if manager_store.set_suggestion_action(google_sub, current_event, issue_key, "skipped"):
+                    st.rerun()
+                else:
+                    st.error("Couldn't save that just now - try again in a moment.")
         else:
             st.caption("Log in with Google (My Team tab) to record what you actually did about "
                        "this - it'll stop being shown as open once you do.")

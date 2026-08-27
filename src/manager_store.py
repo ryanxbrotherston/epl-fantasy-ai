@@ -111,31 +111,53 @@ def get_suggestion_actions(google_sub: str, gameweek: int) -> dict[str, str]:
     this so it stops presenting something as an open suggestion once the
     manager has actually said what they did about it (see conversation
     2026-08-27: "fill out what you actually ended up doing... rather than
-    the model just assuming you followed its advice")."""
-    client = get_client()
-    resp = client.table(SUGGESTION_TABLE).select("issue_key, action") \
-        .eq("google_sub", google_sub).eq("gameweek", gameweek).execute()
-    return {row["issue_key"]: row["action"] for row in resp.data}
+    the model just assuming you followed its advice").
+
+    Any failure here (unreachable Supabase, a client/library quirk on the
+    deployed environment, etc.) returns {} rather than raising - this ran
+    unhardened for one real user and crashed the WHOLE page with an
+    AttributeError Streamlit Cloud redacted the details of, so "can't read
+    my past actions right now" is treated the same safe way every other
+    external call in this codebase already is: as "no data available",
+    never as a reason to take the page down."""
+    try:
+        client = get_client()
+        resp = client.table(SUGGESTION_TABLE).select("issue_key, action") \
+            .eq("google_sub", google_sub).eq("gameweek", gameweek).execute()
+        return {row["issue_key"]: row["action"] for row in resp.data}
+    except Exception:
+        return {}
 
 
-def set_suggestion_action(google_sub: str, gameweek: int, issue_key: str, action: str) -> None:
+def set_suggestion_action(google_sub: str, gameweek: int, issue_key: str, action: str) -> bool:
     """Upsert - the (google_sub, gameweek, issue_key) primary key means
     re-marking the same issue (including "undo", which just re-marks it with
     a fresh timestamp before a caller deletes it - see clear_suggestion_action)
-    just updates the one row rather than accumulating a history."""
-    client = get_client()
-    client.table(SUGGESTION_TABLE).upsert({
-        "google_sub": google_sub,
-        "gameweek": gameweek,
-        "issue_key": issue_key,
-        "action": action,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }).execute()
+    just updates the one row rather than accumulating a history. Returns
+    whether it actually succeeded - callers should tell the user if it
+    didn't, rather than silently assuming their click was saved."""
+    try:
+        client = get_client()
+        client.table(SUGGESTION_TABLE).upsert({
+            "google_sub": google_sub,
+            "gameweek": gameweek,
+            "issue_key": issue_key,
+            "action": action,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+        return True
+    except Exception:
+        return False
 
 
-def clear_suggestion_action(google_sub: str, gameweek: int, issue_key: str) -> None:
+def clear_suggestion_action(google_sub: str, gameweek: int, issue_key: str) -> bool:
     """"Undo" - removes the record entirely so the suggestion goes back to
-    being shown as open, not just toggled to some third state."""
-    client = get_client()
-    client.table(SUGGESTION_TABLE).delete() \
-        .eq("google_sub", google_sub).eq("gameweek", gameweek).eq("issue_key", issue_key).execute()
+    being shown as open, not just toggled to some third state. Returns
+    whether it actually succeeded (see set_suggestion_action)."""
+    try:
+        client = get_client()
+        client.table(SUGGESTION_TABLE).delete() \
+            .eq("google_sub", google_sub).eq("gameweek", gameweek).eq("issue_key", issue_key).execute()
+        return True
+    except Exception:
+        return False
