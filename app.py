@@ -716,14 +716,23 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
              "account's transfer history. Correct it if it's wrong; the plan below solves around "
              "whatever you enter.",
     )
-    allow_hits = st.checkbox(
-        "Allow point hits (-4 pts per transfer beyond its free ones)" if is_ai else
-        "Allow point hits (-4 pts per transfer beyond your free ones)",
-        value=False, key=f"{key_prefix}_allow_hits",
-        help="Off by default: the plan below only ever uses transfers actually available that week "
-             "(banked, or unlimited during a wildcard/free hit week). Turn this on to let the solver "
-             "take a hit when it judges the points gain worth the -4.",
-    )
+    if is_ai:
+        # No human risk preference to defer to here - the model runs this team, so whether a
+        # hit is worth it is left to its own cost/benefit math each week (the objective already
+        # only takes one when the projected points gain across the horizon beats the -4), rather
+        # than a fixed human-set policy. My Team gets an explicit opt-in below instead, since
+        # that's Ryan's own personal risk call, not the model's.
+        allow_hits = True
+        st.caption("Point hits aren't fixed on or off here - the model takes one only when its "
+                   "own projection says the gain over the horizon is worth more than the -4.")
+    else:
+        allow_hits = st.checkbox(
+            "Allow point hits (-4 pts per transfer beyond your free ones)",
+            value=False, key=f"{key_prefix}_allow_hits",
+            help="Off by default: the plan below only ever uses transfers you actually have "
+                 "banked (or an unlimited amount during a wildcard/free hit week). Turn this on "
+                 "to let the solver take a hit when it judges the points gain worth the -4.",
+        )
     if c2.button("Decide this week's move" if is_ai else "Get transfer advice", key=f"{key_prefix}_plan_btn"):
         st.session_state[f"{key_prefix}_show_plan"] = True
 
