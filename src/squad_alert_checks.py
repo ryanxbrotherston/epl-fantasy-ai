@@ -26,7 +26,9 @@ CONFIRMED_LOOKUP_WINDOW_HOURS = 2  # only spend Highlightly API calls this close
                                     # all week for fixtures nowhere near kickoff yet
 
 UNAVAILABLE_STATUSES = {"i", "s", "u", "n"}
-DOUBTFUL_THRESHOLD = 50  # chance_of_playing_next_round % below which a "doubtful" player still gets flagged
+DOUBTFUL_THRESHOLD = 50  # chance_of_playing_next_round % AT OR BELOW which a "doubtful" player
+                          # still gets flagged - "50% or less" per conversation 2026-08-27, hence
+                          # the <= comparison in flag_problem_players() below (not <)
 
 
 def deadline_has_passed(gw: dict) -> bool:
@@ -44,11 +46,14 @@ def deadline_has_passed(gw: dict) -> bool:
 
 def flag_problem_players(picks_df: pd.DataFrame) -> pd.DataFrame:
     """Squad members who are injured/suspended/unavailable, or doubtful below
-    threshold, and are in the starting XI (multiplier > 0, i.e. not benched)."""
-    starting = picks_df[picks_df["multiplier"] > 0].copy()
+    threshold, and are in the starting XI (squad_slot <= 11, i.e. not benched -
+    NOT multiplier > 0, confirmed live 2026-08-27 that a past/finished
+    gameweek's picks can carry multiplier=1 for every one of the 15
+    including bench, so that's not a reliable signal there)."""
+    starting = picks_df[picks_df["squad_slot"] <= 11].copy()
     hard_out = starting["status"].isin(UNAVAILABLE_STATUSES)
     chance = pd.to_numeric(starting.get("chance_of_playing_next_round"), errors="coerce")
-    doubtful = starting["status"].eq("d") & chance.notna() & (chance < DOUBTFUL_THRESHOLD)
+    doubtful = starting["status"].eq("d") & chance.notna() & (chance <= DOUBTFUL_THRESHOLD)
     return starting[hard_out | doubtful]
 
 
@@ -61,7 +66,7 @@ def flag_bench_likely_players(picks_df: pd.DataFrame, predicted_starting_ids: se
     either. Returns an empty frame if the early source was unreachable
     this run (predicted_starting_ids is None) - a fetch failure must
     never get silently treated as "everyone's benched"."""
-    starting = picks_df[picks_df["multiplier"] > 0].copy()
+    starting = picks_df[picks_df["squad_slot"] <= 11].copy()
     if predicted_starting_ids is None or starting.empty:
         return starting.iloc[0:0]
 
@@ -91,7 +96,7 @@ def flag_confirmed_benched_players(picks_df: pd.DataFrame, all_players: pd.DataF
     them rather than guessing, exactly like an unreached/not-yet-released
     source does. Excludes anyone already flagged (official status takes
     priority; a name-match failure here must never override it either way)."""
-    starting = picks_df[picks_df["multiplier"] > 0].copy()
+    starting = picks_df[picks_df["squad_slot"] <= 11].copy()
     starting = starting[~starting["element"].isin(already_flagged_ids)]
     if starting.empty:
         return starting

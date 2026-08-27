@@ -469,8 +469,8 @@ def render_team_lookup(key_prefix: str, default_id: int | None = None, show_sugg
     if show_suggested_changes:
         render_live_score(picks_df, current_event)  # B6 - most time-sensitive, so it goes near the top
 
-    xi = picks_df[picks_df["multiplier"] > 0]
-    bench = picks_df[picks_df["multiplier"] == 0]
+    xi = picks_df[picks_df["squad_slot"] <= 11]
+    bench = picks_df[picks_df["squad_slot"] > 11]
     captain_row = picks_df[picks_df["is_captain"]]
     vice_row = picks_df[picks_df["is_vice_captain"]]
     xi_cards, bench_cards = render_squad_pitch(
@@ -488,7 +488,7 @@ def render_team_lookup(key_prefix: str, default_id: int | None = None, show_sugg
 
     render_suggested_changes(xi, xi_cards, all_players, bank, squad_ids, team_limit_counts)  # B2
     render_transfer_advice(key_prefix, int(team_id), picks_df, history, current_event)       # B3
-    render_best_xi_recommendation(picks_df)                                                  # B4
+    render_best_xi_recommendation(picks_df, current_event)                                   # B4
     render_season_history(int(team_id))                                                      # B5
     render_watchlist()                                                                        # B7
 
@@ -505,7 +505,12 @@ def render_live_score(picks_df: pd.DataFrame, current_event: int):
     out of scope for this pass. Sums the starting XI's live points with each
     pick's own 'multiplier' (1 normal, 2 captain, 3 triple-captain chip) -
     more robust than hardcoding "captain doubled", since it already handles
-    the triple-captain case for free."""
+    the triple-captain case for free. Starting-XI MEMBERSHIP is decided by
+    squad_slot (<=11), not multiplier>0 - confirmed live (2026-08-27) that
+    a past/finished gameweek's picks can carry multiplier=1 for every one
+    of the 15 (including the 4 actually on the bench), so multiplier==0 is
+    NOT a reliable bench signal there; squad_slot (FPL's own 1-11 starting /
+    12-15 bench ordering) always is, regardless of gameweek state."""
     event = next((e for e in bootstrap["events"] if e["id"] == current_event), None)
     if event is None or not event["is_current"] or event["finished"]:
         return  # not live right now - no stale/zeroed section between gameweeks
@@ -515,7 +520,7 @@ def render_live_score(picks_df: pd.DataFrame, current_event: int):
         return  # gameweek is "current" but matches haven't actually kicked off yet
 
     live_points = {e["id"]: e.get("stats", {}).get("total_points", 0) for e in live["elements"]}
-    xi = picks_df[picks_df["multiplier"] > 0]
+    xi = picks_df[picks_df["squad_slot"] <= 11]
     total = sum(live_points.get(row["element"], 0) * row["multiplier"] for _, row in xi.iterrows())
 
     st.metric("Live score (provisional)", total)
@@ -875,10 +880,10 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
 
 # ---------- My Team only: B4, best XI from the existing 15 ----------
 
-def render_best_xi_recommendation(picks_df: pd.DataFrame):
+def render_best_xi_recommendation(picks_df: pd.DataFrame, target_event: int, is_ai: bool = False):
     st.markdown("##### Best XI this week")
-    st.caption("Who should start from your existing 15 - not a transfer suggestion, see Transfer "
-               "advice above for that.")
+    st.caption(f"Who should start from {'the' if is_ai else 'your'} existing 15 - not a transfer "
+               f"suggestion, see {'the transfer decision' if is_ai else 'Transfer advice'} above for that.")
 
     base = load_base_predictions()
     preds_all = refresh_predictions_with_live_data(base, bootstrap)
@@ -890,11 +895,11 @@ def render_best_xi_recommendation(picks_df: pd.DataFrame):
         return
 
     xi_rec, bench_rec, formation_rec, captain_rec, vice_rec = pick_starting_xi(squad_for_opt)
-    actual_starting_ids = set(picks_df[picks_df["multiplier"] > 0]["element"])
+    actual_starting_ids = set(picks_df[picks_df["squad_slot"] <= 11]["element"])
     rec_ids = set(xi_rec["id"])
 
     if rec_ids == actual_starting_ids:
-        st.success(f"Your starting XI is already optimal this week ({formation_rec}).")
+        st.success(f"{'Its' if is_ai else 'Your'} starting XI is already optimal this week ({formation_rec}).")
         return
 
     actual_predicted = squad_for_opt[squad_for_opt["id"].isin(actual_starting_ids)]["predicted_points"].sum()
@@ -902,8 +907,20 @@ def render_best_xi_recommendation(picks_df: pd.DataFrame):
     name_of = dict(zip(squad_for_opt["id"], squad_for_opt["web_name"]))
     bench_in = [name_of.get(i, "?") for i in (rec_ids - actual_starting_ids)]
     start_out = [name_of.get(i, "?") for i in (actual_starting_ids - rec_ids)]
-    st.info(f"Your best XI this week is a **{formation_rec}** — start **{', '.join(bench_in)}** "
-            f"instead of **{', '.join(start_out)}** for **+{gain:.1f}** predicted points.")
+    st.info(f"{'Its' if is_ai else 'Your'} best XI this week is a **{formation_rec}** — start "
+            f"**{', '.join(bench_in)}** instead of **{', '.join(start_out)}** for **+{gain:.1f}** "
+            "predicted points.")
+
+    # Show it, not just describe it - the pitch above still shows the actual submitted XI; this
+    # one reflects the recommendation itself, right in the same render pass (see conversation
+    # 2026-08-27: "the field view should update... when you make a change" - Streamlit has no
+    # partial/animated update, but a full rerun already happens on every interaction, so
+    # rendering this immediately IS the "instant" update available here).
+    st.caption("Pitch below shows this **recommended** XI, not the one actually submitted.")
+    render_squad_pitch(
+        xi_rec, bench_rec, "id", "predicted_points", bootstrap, all_players, target_event,
+        captain_id=captain_rec["id"], vice_id=vice_rec["id"],
+    )
 
 
 # ---------- My Team only: B5, season performance history ----------
@@ -1006,17 +1023,28 @@ with tab_ai:
                     c3.metric("Bank", f"£{history['bank'] / 10:.1f}m")
                     c4.metric("Team value", f"£{history['value'] / 10:.1f}m")
 
-                    xi = picks_df[picks_df["multiplier"] > 0]
-                    bench = picks_df[picks_df["multiplier"] == 0]
+                    xi = picks_df[picks_df["squad_slot"] <= 11]
+                    bench = picks_df[picks_df["squad_slot"] > 11]
                     captain_row = picks_df[picks_df["is_captain"]]
                     vice_row = picks_df[picks_df["is_vice_captain"]]
-                    render_squad_pitch(
+                    xi_cards, bench_cards = render_squad_pitch(
                         xi, bench, "element", "ep_next", bootstrap, all_players, current_event,
                         captain_id=captain_row["element"].iloc[0] if not captain_row.empty else None,
                         vice_id=vice_row["element"].iloc[0] if not vice_row.empty else None,
                     )
 
+                    squad_ids = set(picks_df["element"])
+                    team_limit_counts = all_players[all_players["id"].isin(squad_ids)]["team"].value_counts().to_dict()
+                    bank = history.get("bank", 0)
+
+                    # Same B2/B3/B4 suite My Team gets (render_team_lookup, below) - the AI tab
+                    # previously only showed transfer advice, so injury-driven bench/replace
+                    # decisions (not just buy/sell) were invisible here even though the model
+                    # weighs them the same way for both teams (see conversation 2026-08-27:
+                    # "the AI needs to say what team changes it wants to make not just transfers").
+                    render_suggested_changes(xi, xi_cards, all_players, bank, squad_ids, team_limit_counts)
                     render_transfer_advice("ai", ai_team_id, picks_df, history, current_event, is_ai=True)
+                    render_best_xi_recommendation(picks_df, current_event, is_ai=True)
 
 
 with tab_mine:
