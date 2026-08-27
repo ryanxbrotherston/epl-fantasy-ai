@@ -689,36 +689,49 @@ def solve_transfer_plan(squad_ids_tuple: tuple, bank: int, free_transfers: int, 
     )
 
 
-def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame, history: dict, target_event: int):
-    st.markdown("##### Transfer advice")
-    st.caption("Who to bring in this week, and why. Solves the next 5 gameweeks but only commits "
-               "to this week's move - the rest is a live forecast, rerun weekly (see the note below "
-               "once it runs).")
+def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame, history: dict, target_event: int,
+                            is_ai: bool = False):
+    """is_ai=True (the AI Team tab): this isn't advice FOR someone, the
+    model IS this team's manager - copy speaks in those terms (a transfer
+    decision it's making, not a recommendation it's handing you) rather
+    than reusing My Team's "here's what you should do" framing."""
+    if is_ai:
+        st.markdown("##### This week's transfer decision")
+        st.caption("What the model is bringing in this week, and why. Solves the next 5 gameweeks "
+                   "but only commits to this week's move - the rest is a live forecast, rerun weekly "
+                   "(see the note below once it runs).")
+    else:
+        st.markdown("##### Transfer advice")
+        st.caption("Who to bring in this week, and why. Solves the next 5 gameweeks but only commits "
+                   "to this week's move - the rest is a live forecast, rerun weekly (see the note below "
+                   "once it runs).")
 
     default_ft = estimate_free_transfers(team_id)
     c1, c2 = st.columns([2, 1])
     free_transfers = c1.number_input(
-        "Free transfers available", min_value=0, max_value=multi_week_planner.MAX_FREE_TRANSFERS,
+        "Free transfers the AI has this week" if is_ai else "Free transfers available",
+        min_value=0, max_value=multi_week_planner.MAX_FREE_TRANSFERS,
         value=default_ft, key=f"{key_prefix}_ft",
-        help="FPL's API doesn't directly expose this - this is a best-effort estimate from your "
-             "transfer history. Correct it if it's wrong; the advice below solves around whatever "
-             "you enter.",
+        help="FPL's API doesn't directly expose this - this is a best-effort estimate from the "
+             "account's transfer history. Correct it if it's wrong; the plan below solves around "
+             "whatever you enter.",
     )
     allow_hits = st.checkbox(
+        "Allow point hits (-4 pts per transfer beyond its free ones)" if is_ai else
         "Allow point hits (-4 pts per transfer beyond your free ones)",
         value=False, key=f"{key_prefix}_allow_hits",
-        help="Off by default: the plan below only ever uses transfers you actually have "
-             "banked (or an unlimited amount during a wildcard/free hit week). Turn this on "
-             "to let the solver take a hit when it judges the points gain worth the -4.",
+        help="Off by default: the plan below only ever uses transfers actually available that week "
+             "(banked, or unlimited during a wildcard/free hit week). Turn this on to let the solver "
+             "take a hit when it judges the points gain worth the -4.",
     )
-    if c2.button("Get transfer advice", key=f"{key_prefix}_plan_btn"):
+    if c2.button("Decide this week's move" if is_ai else "Get transfer advice", key=f"{key_prefix}_plan_btn"):
         st.session_state[f"{key_prefix}_show_plan"] = True
 
     if not st.session_state.get(f"{key_prefix}_show_plan"):
         st.caption("Solves an ILP over a filtered candidate pool (top predicted-points players per "
-                   "position, plus your own squad) across 5 gameweeks, bounded to "
-                   f"{SOLVE_TIME_LIMIT_SECONDS}s - not a quick lookup. Cached for 30 minutes "
-                   "afterward, so repeated views don't re-solve.")
+                   f"position, plus the squad{'' if is_ai else ' you loaded'}) across 5 gameweeks, "
+                   f"bounded to {SOLVE_TIME_LIMIT_SECONDS}s - not a quick lookup. Cached for 30 "
+                   "minutes afterward, so repeated views don't re-solve.")
         return
 
     with st.spinner(f"Solving the next 5 gameweeks (bounded to {SOLVE_TIME_LIMIT_SECONDS}s)..."):
@@ -903,7 +916,7 @@ with tab_ai:
                         vice_id=vice_row["element"].iloc[0] if not vice_row.empty else None,
                     )
 
-                    render_transfer_advice("ai", ai_team_id, picks_df, history, current_event)
+                    render_transfer_advice("ai", ai_team_id, picks_df, history, current_event, is_ai=True)
 
 
 with tab_mine:
