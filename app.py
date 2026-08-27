@@ -656,6 +656,26 @@ def filter_candidate_pool(preds_all: pd.DataFrame, current_squad_ids: set,
     return preds_all[preds_all["id"].isin(keep_ids)]
 
 
+HIT_MARGIN_PCT = 0.06  # -4 is a big bite out of a typical week's score (e.g. ~8% of a 50-point
+                        # week already) - requiring the projected edge to clear break-even by
+                        # only a hair means a hit gets taken on noise as often as on real signal
+                        # (squad_optimizer.py's backtested MAE is ~1pt/player/gameweek, so a
+                        # 1-2pt "edge" is within the model's own known error bar). Padding the
+                        # required edge by a further ~6% of a typical gameweek score - grounded
+                        # in FPL's own live average_entry_score, not a made-up constant - pushes
+                        # the bar to a comfortably real edge before spending the real, certain -4.
+
+
+def typical_gameweek_score(_bootstrap: dict, default: float = 50.0) -> float:
+    """FPL's own average_entry_score from the most recently finished gameweek - the live
+    "what does a normal week actually score" benchmark used to size HIT_MARGIN_PCT's points
+    buffer. Falls back to `default` pre-season, before any gameweek has an average yet."""
+    finished = [e for e in _bootstrap["events"] if e.get("finished") and e.get("average_entry_score")]
+    if not finished:
+        return default
+    return float(max(finished, key=lambda e: e["id"])["average_entry_score"])
+
+
 @st.cache_data(ttl=1800)
 def solve_transfer_plan(squad_ids_tuple: tuple, bank: int, free_transfers: int, target_event: int,
                          team_id: int, _bootstrap: dict, _all_players: pd.DataFrame,
@@ -682,10 +702,12 @@ def solve_transfer_plan(squad_ids_tuple: tuple, bank: int, free_transfers: int, 
     chip_windows = multi_week_planner.chip_windows_from_bootstrap(_bootstrap["chips"])
     chips_already_used = estimate_chips_used(team_id, chip_windows)
 
+    hit_confidence_margin = typical_gameweek_score(_bootstrap) * HIT_MARGIN_PCT
     return multi_week_planner.plan(
         projection_table, gameweeks, squad_ids, bank, free_transfers,
         chip_windows, chips_already_used, team_of,
         time_limit=SOLVE_TIME_LIMIT_SECONDS, allow_hits=allow_hits,
+        hit_confidence_margin=hit_confidence_margin,
     )
 
 
@@ -716,22 +738,29 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
              "account's transfer history. Correct it if it's wrong; the plan below solves around "
              "whatever you enter.",
     )
+    typical_score = typical_gameweek_score(bootstrap)
+    hit_bar = multi_week_planner.HIT_COST + typical_score * HIT_MARGIN_PCT
     if is_ai:
         # No human risk preference to defer to here - the model runs this team, so whether a
         # hit is worth it is left to its own cost/benefit math each week (the objective already
-        # only takes one when the projected points gain across the horizon beats the -4), rather
-        # than a fixed human-set policy. My Team gets an explicit opt-in below instead, since
-        # that's Ryan's own personal risk call, not the model's.
+        # requires clearing hit_bar, not just break-even), rather than a fixed human-set policy.
+        # My Team gets an explicit opt-in below instead, since that's Ryan's own personal risk
+        # call, not the model's.
         allow_hits = True
-        st.caption("Point hits aren't fixed on or off here - the model takes one only when its "
-                   "own projection says the gain over the horizon is worth more than the -4.")
+        st.caption(f"Point hits aren't fixed on or off here - a real -4 is ~{4/typical_score:.0%} of "
+                   f"a typical week (~{typical_score:.0f} pts, FPL's own average this season), so the "
+                   f"model only takes one when its projected gain over the horizon clears a real "
+                   f"edge (~{hit_bar:.1f} pts), not a razor-thin one.")
     else:
         allow_hits = st.checkbox(
             "Allow point hits (-4 pts per transfer beyond your free ones)",
             value=False, key=f"{key_prefix}_allow_hits",
-            help="Off by default: the plan below only ever uses transfers you actually have "
+            help=f"Off by default: the plan below only ever uses transfers you actually have "
                  "banked (or an unlimited amount during a wildcard/free hit week). Turn this on "
-                 "to let the solver take a hit when it judges the points gain worth the -4.",
+                 "to let the solver take a hit - but only when its projected gain over the "
+                 f"horizon clears a real edge (~{hit_bar:.1f} pts), not just the literal -4 "
+                 f"break-even - a real hit is too big a chunk of a typical week (~{typical_score:.0f} "
+                 "pts) to spend on a razor-thin modelled edge.",
         )
     if c2.button("Decide this week's move" if is_ai else "Get transfer advice", key=f"{key_prefix}_plan_btn"):
         st.session_state[f"{key_prefix}_show_plan"] = True

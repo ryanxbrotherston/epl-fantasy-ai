@@ -59,6 +59,17 @@ def plan(
                                # the solver trade -4pts/transfer for predicted-points gain -
                                # some users would rather bank a mediocre gain than ever
                                # take a hit, regardless of what the model says it's worth.
+    hit_confidence_margin: float = 0.0,  # extra points of projected edge required ON TOP OF
+                               # HIT_COST before a hit is taken at all - see app.py's
+                               # typical_gameweek_score() for how this is set. Rationale: -4 is
+                               # a real cost, but "projected gain > 4" alone means the solver
+                               # takes a hit on a razor-thin modelled edge, and the projection
+                               # itself carries real error (squad_optimizer.py's backtested MAE
+                               # is ~1pt/player/gameweek) - a hit should clear a comfortably
+                               # larger bar than pure break-even before it's worth the real,
+                               # certain -4. Only changes the DECISION threshold, not the
+                               # reported cost - hits_taken is still billed at the true HIT_COST
+                               # in _extract_plan() below and in app.py's display.
 ):
     prob = pulp.LpProblem("multi_week_fpl_plan", pulp.LpMaximize)
     players = projection_table["id"].tolist()
@@ -107,7 +118,7 @@ def plan(
             cap_bonus = pts * captain[(p, gw)]
             tc_bonus = pts * capt_and_tc[(p, gw)]
             objective_terms.append(base + cap_bonus + tc_bonus)
-        objective_terms.append(-HIT_COST * hits[gw])
+        objective_terms.append(-(HIT_COST + hit_confidence_margin) * hits[gw])
     prob += pulp.lpSum(objective_terms)
 
     # AND-linearization: capt_and_tc = captain AND triple_capt_active
