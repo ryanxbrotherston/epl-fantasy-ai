@@ -848,7 +848,8 @@ def solve_transfer_plan(squad_ids_tuple: tuple, bank: int, free_transfers: int, 
     )
 
 
-def _render_top_trades(picks_df: pd.DataFrame, history: dict, free_transfers: int, key_prefix: str):
+def _render_top_trades(picks_df: pd.DataFrame, history: dict, free_transfers: int, key_prefix: str,
+                        is_ai: bool = False):
     """The top 10 single-swap trade ideas across the WHOLE squad - complete, nameable
     (OUT, IN) pairs, ranked by net predicted-points gain, not a pool of alternatives for
     one already-flagged player (see squad_alert_checks.rank_squad_trades()'s own
@@ -891,7 +892,15 @@ def _render_top_trades(picks_df: pd.DataFrame, history: dict, free_transfers: in
                            "IN overall strength", "IN season PPG", "IN late-last-season form"]
 
     st.markdown("###### Top 10 trades across the squad")
-    if highlight_n > 0:
+    if is_ai:
+        # Short and factual - no methodology explanation on the AI page (see conversation
+        # 2026-08-27: "all this small grey text... isnt necessary or relevant to the user").
+        # My Team keeps the fuller explanation below, since a human deciding whether to act
+        # on this benefits from knowing why a small/negative #1 gain isn't a bug.
+        st.caption(f"⭐ = top {highlight_n} (matches its {free_transfers} free transfer"
+                   f"{'s' if free_transfers != 1 else ''})." if highlight_n > 0 else
+                   "0 free transfers right now.")
+    elif highlight_n > 0:
         st.caption(f"Every single-swap trade idea available in the squad right now, ranked by net "
                    f"predicted-points gain. ⭐ marks the top **{highlight_n}**, matching the "
                    f"**{free_transfers}** free transfer{'s' if free_transfers != 1 else ''} available - "
@@ -919,9 +928,6 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
     than reusing My Team's "here's what you should do" framing."""
     if is_ai:
         st.markdown("##### This week's transfer decision")
-        st.caption(f"What the model is bringing in this week, and why. Solves the next "
-                   f"{TRANSFER_PLAN_HORIZON_WEEKS} gameweeks but only commits to this week's move - "
-                   "the rest is a live forecast, rerun weekly (see the note below once it runs).")
     else:
         st.markdown("##### Transfer advice")
         st.caption(f"Who to bring in this week, and why. Solves the next {TRANSFER_PLAN_HORIZON_WEEKS} "
@@ -958,7 +964,7 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
                  "you enter.",
         )
 
-    _render_top_trades(picks_df, history, free_transfers, key_prefix)
+    _render_top_trades(picks_df, history, free_transfers, key_prefix, is_ai=is_ai)
 
     typical_score = typical_gameweek_score(bootstrap)
     hit_bar = multi_week_planner.HIT_COST + typical_score * HIT_MARGIN_PCT
@@ -967,12 +973,11 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
         # hit is worth it is left to its own cost/benefit math each week (the objective already
         # requires clearing hit_bar, not just break-even), rather than a fixed human-set policy.
         # My Team gets an explicit opt-in below instead, since that's Ryan's own personal risk
-        # call, not the model's.
+        # call, not the model's. No caption explaining the math here - the AI page states
+        # decisions, not methodology (see conversation 2026-08-27: "all this small grey text...
+        # isnt necessary or relevant to the user" - "Point hits aren't fixed on or off here..."
+        # was the direct example given).
         allow_hits = True
-        st.caption(f"Point hits aren't fixed on or off here - a real -4 is ~{4/typical_score:.0%} of "
-                   f"a typical week (~{typical_score:.0f} pts, FPL's own average this season), so the "
-                   f"model only takes one when its projected gain over the horizon clears a real "
-                   f"edge (~{hit_bar:.1f} pts), not a razor-thin one.")
     else:
         allow_hits = st.checkbox(
             "Allow point hits (-4 pts per transfer beyond your free ones)",
@@ -1032,9 +1037,10 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
         st.caption(f"Plan currently looks toward using **{future_chip['chip']}** around "
                    f"GW{future_chip['gameweek']}.")
 
-    st.caption("Known limitation: this reuses one static season-baseline prediction scaled by "
-               "fixture difficulty for the whole horizon, rather than re-estimating player quality "
-               "week by week - real and disclosed, not hidden (see NEXT_STEPS.md).")
+    if not is_ai:
+        st.caption("Known limitation: this reuses one static season-baseline prediction scaled by "
+                   "fixture difficulty for the whole horizon, rather than re-estimating player "
+                   "quality week by week - real and disclosed, not hidden (see NEXT_STEPS.md).")
 
 
 # ---------- My Team only: B4, best XI from the existing 15 ----------
