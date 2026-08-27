@@ -141,12 +141,13 @@ def flag_confirmed_benched_players(picks_df: pd.DataFrame, all_players: pd.DataF
     return pd.DataFrame(flagged_rows) if flagged_rows else starting.iloc[0:0]
 
 
-def suggest_replacement(problem_player: pd.Series, squad_ids: set, bank: int,
-                         all_players: pd.DataFrame, team_limit_counts: dict) -> pd.Series | None:
-    """Best same-position, budget-feasible, club-limit-respecting replacement,
-    ranked by FPL's own ep_next blended with points_per_game (the live model's
-    rolling component isn't recomputed here - this is a simpler in-season
-    proxy, see README)."""
+def _eligible_candidates(problem_player: pd.Series, squad_ids: set, bank: int,
+                          all_players: pd.DataFrame, team_limit_counts: dict) -> pd.DataFrame:
+    """Same-position, budget-feasible, club-limit-respecting, available candidates
+    for replacing problem_player - the shared filtering both suggest_replacement()
+    (single best pick, for email alert bodies) and suggest_replacements() (ranked
+    top-N, for the My Team UI) build on, so the eligibility rules can never drift
+    between the two."""
     max_price = problem_player["now_cost"] + bank
     pos = problem_player["position"]
     team_of_departing = problem_player.get("team")
@@ -164,7 +165,16 @@ def suggest_replacement(problem_player: pd.Series, squad_ids: set, bank: int,
             count -= 1  # departing player frees up a club slot
         return count < 3
 
-    candidates = candidates[candidates.apply(club_ok, axis=1)]
+    return candidates[candidates.apply(club_ok, axis=1)]
+
+
+def suggest_replacement(problem_player: pd.Series, squad_ids: set, bank: int,
+                         all_players: pd.DataFrame, team_limit_counts: dict) -> pd.Series | None:
+    """Best same-position, budget-feasible, club-limit-respecting replacement,
+    ranked by FPL's own ep_next blended with points_per_game (the live model's
+    rolling component isn't recomputed here - this is a simpler in-season
+    proxy, see README)."""
+    candidates = _eligible_candidates(problem_player, squad_ids, bank, all_players, team_limit_counts)
     if candidates.empty:
         return None
 
@@ -172,3 +182,72 @@ def suggest_replacement(problem_player: pd.Series, squad_ids: set, bank: int,
     ppg = pd.to_numeric(candidates["points_per_game"], errors="coerce").fillna(0)
     candidates["score"] = 0.6 * ep_next + 0.4 * ppg
     return candidates.sort_values("score", ascending=False).iloc[0]
+
+
+def suggest_replacements(problem_player: pd.Series, squad_ids: set, bank: int,
+                          preds_all: pd.DataFrame, team_limit_counts: dict,
+                          top_n: int = 10) -> pd.DataFrame:
+    """Top-N same-position, budget/club-limit-feasible replacements, ranked by
+    our own model's predicted_points (the "overall strength" column - the same
+    blended model/ep_next/ppg score the transfer planner itself optimizes on,
+    NOT the simpler ep_next+ppg proxy suggest_replacement() above uses for a
+    one-line email suggestion). preds_all must be the full model-scored table
+    (app.py's refresh_predictions_with_live_data() output), not the plain FPL
+    bootstrap frame - only that one carries predicted_points and roll_total_points.
+    Callers get season performance (points_per_game) and historic performance
+    (roll_total_points - despite the name, this is a 5-gameweek ROLLING AVERAGE
+    from the end of last season, per build_gw1_features.py's ROLLING_WINDOW=5,
+    not a season total; 0 if this player has no matched prior-season history)
+    as separate columns
+    alongside the ranking, rather than folding everything into one opaque score -
+    the ranking axis should be legible, not just a number to trust blindly."""
+    candidates = _eligible_candidates(problem_player, squad_ids, bank, preds_all, team_limit_counts)
+    if candidates.empty:
+        return candidates
+
+    candidates = candidates.sort_values("predicted_points", ascending=False).head(top_n).copy()
+    if "roll_total_points" not in candidates.columns:
+        candidates["roll_total_points"] = 0.0
+    candidates["roll_total_points"] = pd.to_numeric(candidates["roll_total_points"], errors="coerce").fillna(0.0)
+    return candidates
+
+
+def rank_squad_trades(squad_df: pd.DataFrame, squad_ids: set, bank: int, preds_all: pd.DataFrame,
+                       team_limit_counts: dict, top_n: int = 10) -> pd.DataFrame:
+    """The top N single-swap trade IDEAS across the WHOLE squad - not a list of
+    alternatives for one already-flagged problem player. For each of the 15 squad
+    members, finds their single best same-position/budget/club-limit-feasible
+    replacement (via suggest_replacements(), keeping only its #1 pick), then ranks
+    ALL those (out, in) pairs together by net predicted_points gain. Each row is a
+    complete, nameable trade - "OUT: X, IN: Y" - not just a pool of incoming
+    candidates (see conversation 2026-08-27: this replaced an earlier version that
+    only ranked replacements for one flagged player, which missed the point).
+
+    squad_df must be the 15-man squad's rows from preds_all (not all_players) - same
+    reason as suggest_replacements() above, it needs predicted_points/roll_total_points.
+
+    A near-zero or negative top gain is a REAL, VALID answer, not a bug - FPL lets you
+    bank up to 5 free transfers, so "none of these are worth it, save the transfer" is
+    a legitimate recommendation this ranking should be able to produce, not something
+    to hide by forcing a trade to look good."""
+    rows = []
+    for _, out_player in squad_df.iterrows():
+        picks = suggest_replacements(out_player, squad_ids, bank, preds_all, team_limit_counts, top_n=1)
+        if picks.empty:
+            continue
+        in_player = picks.iloc[0]
+        out_points = float(pd.to_numeric(pd.Series([out_player.get("predicted_points", 0)]),
+                                          errors="coerce").fillna(0).iloc[0])
+        rows.append({
+            "out_id": out_player["id"], "out_name": out_player["web_name"],
+            "out_points": out_points,
+            "in_id": in_player["id"], "in_name": in_player["web_name"],
+            "in_team": in_player["team_name"], "in_cost": in_player["now_cost"],
+            "in_points": in_player["predicted_points"],
+            "in_ppg": in_player.get("points_per_game"),
+            "in_roll_total_points": in_player.get("roll_total_points", 0.0),
+            "gain": in_player["predicted_points"] - out_points,
+        })
+    if not rows:
+        return pd.DataFrame(rows)
+    return pd.DataFrame(rows).sort_values("gain", ascending=False).head(top_n).reset_index(drop=True)

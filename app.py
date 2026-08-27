@@ -486,7 +486,8 @@ def render_team_lookup(key_prefix: str, default_id: int | None = None, show_sugg
     team_limit_counts = all_players[all_players["id"].isin(squad_ids)]["team"].value_counts().to_dict()
     bank = history.get("bank", 0)
 
-    render_suggested_changes(xi, xi_cards, all_players, bank, squad_ids, team_limit_counts)  # B2
+    render_suggested_changes(xi, xi_cards, all_players, bank, squad_ids, team_limit_counts,
+                              int(team_id), current_event, key_prefix)  # B2
     render_transfer_advice(key_prefix, int(team_id), picks_df, history, current_event)       # B3
     render_best_xi_recommendation(picks_df, current_event)                                   # B4
     render_season_history(int(team_id))                                                      # B5
@@ -531,7 +532,8 @@ def render_live_score(picks_df: pd.DataFrame, current_event: int):
 # ---------- My Team only: B2, stats-backed suggested changes ----------
 
 def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players: pd.DataFrame,
-                              bank: int, squad_ids: set, team_limit_counts: dict):
+                              bank: int, squad_ids: set, team_limit_counts: dict,
+                              team_id: int, current_event: int, key_prefix: str):
     """Reuses each starting-XI card's already-computed flag (xi_cards, built
     once by render_squad_pitch/build_pitch_cards) rather than re-deriving
     it - the same dot color the pitch already shows. Confirmed (red) and
@@ -561,7 +563,22 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
         rise_cutoff = price_moves["prob_rise"].quantile(0.9)
         fall_cutoff = price_moves["prob_fall"].quantile(0.9)
 
+    logged_in = getattr(st.user, "is_logged_in", False)
+    google_sub = st.user.sub if logged_in else None
+    actions = manager_store.get_suggestion_actions(google_sub, current_event) if logged_in else {}
+
     def render_one(row, card):
+        issue_key = f"{key_prefix}_{row['element']}_{row['status']}"
+        prior_action = actions.get(issue_key)
+        if prior_action is not None:
+            verb = "done" if prior_action == "done" else "skipped"
+            icon = "✅" if prior_action == "done" else "⏭️"
+            st.markdown(f"**{card['position']} {row['web_name']}** — {icon} you marked this **{verb}**")
+            if st.button("Undo", key=f"undo_{issue_key}"):
+                manager_store.clear_suggestion_action(google_sub, current_event, issue_key)
+                st.rerun()
+            return
+
         st.markdown(f"**{card['position']} {row['web_name']}** — {card['basis']}: {card['detail']}")
 
         # Licensed injury/news detail (Highlightly) for this ONE flagged player only - never
@@ -623,6 +640,18 @@ def render_suggested_changes(xi: pd.DataFrame, xi_cards: list[dict], all_players
                 if pd.notna(v) and v >= rise_cutoff:
                     st.caption(f"💰 {replacement['web_name']}'s price looks likely to rise soon - "
                                f"consider buying now before it does.")
+
+        if logged_in:
+            bcol1, bcol2 = st.columns(2)
+            if bcol1.button("✅ I made this change", key=f"done_{issue_key}"):
+                manager_store.set_suggestion_action(google_sub, current_event, issue_key, "done")
+                st.rerun()
+            if bcol2.button("⏭️ I'm skipping this", key=f"skip_{issue_key}"):
+                manager_store.set_suggestion_action(google_sub, current_event, issue_key, "skipped")
+                st.rerun()
+        else:
+            st.caption("Log in with Google (My Team tab) to record what you actually did about "
+                       "this - it'll stop being shown as open once you do.")
 
     if red:
         st.error("🔴 CONFIRMED — official status or a released team sheet")
@@ -785,6 +814,69 @@ def solve_transfer_plan(squad_ids_tuple: tuple, bank: int, free_transfers: int, 
     )
 
 
+def _render_top_trades(picks_df: pd.DataFrame, history: dict, free_transfers: int, key_prefix: str):
+    """The top 10 single-swap trade ideas across the WHOLE squad - complete, nameable
+    (OUT, IN) pairs, ranked by net predicted-points gain, not a pool of alternatives for
+    one already-flagged player (see squad_alert_checks.rank_squad_trades()'s own
+    docstring for the full "why" - this replaced an earlier, wrong-shaped version per
+    conversation 2026-08-27). Purely informational context alongside the decisive ILP
+    plan below it - that one considers combinations/hits/chips jointly across the whole
+    horizon and IS the actual recommendation; this ranks single swaps individually and in
+    isolation, so it can disagree with the plan below (e.g. flag a good swap the plan
+    skips because a DIFFERENT combination scores even higher) - both being true at once
+    is normal, not a bug."""
+    base = load_base_predictions()
+    preds_all = refresh_predictions_with_live_data(base, bootstrap)
+    squad_ids = set(picks_df["element"])
+    team_limit_counts = all_players[all_players["id"].isin(squad_ids)]["team"].value_counts().to_dict()
+    squad_for_ranking = preds_all[preds_all["id"].isin(squad_ids)]
+
+    ranked = squad_alert_checks.rank_squad_trades(
+        squad_for_ranking, squad_ids, int(history.get("bank", 0)), preds_all, team_limit_counts, top_n=10,
+    )
+    if ranked.empty:
+        return
+
+    highlight_n = max(0, min(int(free_transfers), 3))  # clamp to 3 so banking several free
+                                                          # transfers doesn't highlight most of the table
+
+    display_df = ranked[["out_name", "in_name", "in_team", "in_cost", "gain",
+                          "in_points", "in_ppg", "in_roll_total_points"]].copy()
+    # Fixed-decimal STRINGS, not just rounded floats - st.dataframe renders a rounded float
+    # at full precision anyway (1.33 shows as "1.330000"), same lesson as the price column
+    # already being formatted as a string below.
+    display_df["in_cost"] = (display_df["in_cost"] / 10).map("£{:.1f}m".format)
+    display_df["gain"] = display_df["gain"].map("{:+.2f}".format)
+    display_df["in_points"] = display_df["in_points"].map("{:.2f}".format)
+    display_df["in_ppg"] = pd.to_numeric(display_df["in_ppg"], errors="coerce").map(
+        lambda v: "-" if pd.isna(v) else f"{v:.1f}")
+    display_df["in_roll_total_points"] = display_df["in_roll_total_points"].map("{:.1f}".format)
+    if highlight_n > 0:
+        display_df.loc[:highlight_n - 1, "out_name"] = "⭐ " + display_df.loc[:highlight_n - 1, "out_name"]
+    display_df.columns = ["OUT", "IN", "IN's team", "IN price", "Net gain",
+                           "IN overall strength", "IN season PPG", "IN late-last-season form"]
+
+    st.markdown("###### Top 10 trades across the squad")
+    if highlight_n > 0:
+        st.caption(f"Every single-swap trade idea available in the squad right now, ranked by net "
+                   f"predicted-points gain. ⭐ marks the top **{highlight_n}**, matching the "
+                   f"**{free_transfers}** free transfer{'s' if free_transfers != 1 else ''} available - "
+                   f"but a small or negative gain even at #1 is a real answer, not a bug: FPL lets you "
+                   f"bank up to {multi_week_planner.MAX_FREE_TRANSFERS} free transfers, so saving this "
+                   "one is often the right call.")
+    else:
+        st.caption("Every single-swap trade idea available in the squad right now, ranked by net "
+                   "predicted-points gain. 0 free transfers right now, so any of these would cost a "
+                   "hit - see the plan below for whether that's worth it.")
+
+    def _highlight_row(r):
+        style = ("background-color: rgba(212, 175, 55, 0.16); "
+                 "border-left: 3px solid #D4AF37;") if r.name < highlight_n else ""
+        return [style] * len(r)
+
+    st.dataframe(display_df.style.apply(_highlight_row, axis=1), hide_index=True, use_container_width=True)
+
+
 def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame, history: dict, target_event: int,
                             is_ai: bool = False):
     """is_ai=True (the AI Team tab): this isn't advice FOR someone, the
@@ -812,6 +904,9 @@ def render_transfer_advice(key_prefix: str, team_id: int, picks_df: pd.DataFrame
              "account's transfer history. Correct it if it's wrong; the plan below solves around "
              "whatever you enter.",
     )
+
+    _render_top_trades(picks_df, history, free_transfers, key_prefix)
+
     typical_score = typical_gameweek_score(bootstrap)
     hit_bar = multi_week_planner.HIT_COST + typical_score * HIT_MARGIN_PCT
     if is_ai:
@@ -1051,7 +1146,8 @@ with tab_ai:
                     # decisions (not just buy/sell) were invisible here even though the model
                     # weighs them the same way for both teams (see conversation 2026-08-27:
                     # "the AI needs to say what team changes it wants to make not just transfers").
-                    render_suggested_changes(xi, xi_cards, all_players, bank, squad_ids, team_limit_counts)
+                    render_suggested_changes(xi, xi_cards, all_players, bank, squad_ids, team_limit_counts,
+                                              ai_team_id, current_event, "ai")
                     render_transfer_advice("ai", ai_team_id, picks_df, history, current_event, is_ai=True)
                     render_best_xi_recommendation(picks_df, current_event, is_ai=True)
 

@@ -64,13 +64,35 @@ def build_projection_table(squad_predictions: pd.DataFrame, fixtures: pd.DataFra
                 continue
 
             gw_total = 0.0
+            defensive_position = player["position"] in ("GK", "DEF")
             for opponent, is_home in team_fixtures:
-                lam = predict_lambda(model, encoder, team, opponent, int(is_home))
-                if np.isnan(lam):
-                    gw_total += player["predicted_points"]  # unseen opponent - no adjustment, use baseline
+                if defensive_position:
+                    # GK/DEF points (clean sheets, saves, defensive contribution) depend on
+                    # how FEW goals the OPPONENT is expected to score against this team - NOT
+                    # this team's own attacking lambda, which is what the else-branch below
+                    # uses and what this branch used to use too. That bug meant a defender's
+                    # fixture adjustment tracked their OWN side's goalscoring form and
+                    # completely ignored how dangerous the actual opponent's attack is - e.g.
+                    # captaining a striker for a good attacking matchup and, in the very same
+                    # fixture, starting the OPPOSING side's keeper for a clean sheet never got
+                    # flagged as inconsistent, because the keeper's multiplier never looked at
+                    # the striker's team's attacking strength at all (see conversation
+                    # 2026-08-27's Joao Pedro/Verbruggen example). Inverted: a weak opponent
+                    # attack (low lambda) now boosts the multiplier, a strong one shrinks it -
+                    # mirrors fixture_ticker.py's own separate attacking_difficulty/
+                    # defensive_difficulty split, which this function previously ignored.
+                    opp_lambda = predict_lambda(model, encoder, opponent, team, int(not is_home))
+                    if np.isnan(opp_lambda) or opp_lambda <= 0:
+                        gw_total += player["predicted_points"]
+                        continue
+                    difficulty_multiplier = league_avg_lambda / opp_lambda if league_avg_lambda > 0 else 1.0
                 else:
+                    lam = predict_lambda(model, encoder, team, opponent, int(is_home))
+                    if np.isnan(lam):
+                        gw_total += player["predicted_points"]  # unseen opponent - no adjustment, use baseline
+                        continue
                     difficulty_multiplier = lam / league_avg_lambda if league_avg_lambda > 0 else 1.0
-                    gw_total += player["predicted_points"] * difficulty_multiplier
+                gw_total += player["predicted_points"] * difficulty_multiplier
             col.append(gw_total)
         result[f"gw{gw}"] = col
 

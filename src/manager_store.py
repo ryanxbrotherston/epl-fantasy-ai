@@ -100,3 +100,42 @@ def add_friend_team_id(google_sub: str, team_id: int) -> None:
 def remove_friend_team_id(google_sub: str, team_id: int) -> None:
     client = get_client()
     client.table(FRIEND_TABLE).delete().eq("google_sub", google_sub).eq("friend_team_id", team_id).execute()
+
+
+SUGGESTION_TABLE = "suggestion_actions"
+
+
+def get_suggestion_actions(google_sub: str, gameweek: int) -> dict[str, str]:
+    """{issue_key: 'done'|'skipped'} for this manager's own confirmed/dismissed
+    Suggested Changes alerts this gameweek - render_suggested_changes() uses
+    this so it stops presenting something as an open suggestion once the
+    manager has actually said what they did about it (see conversation
+    2026-08-27: "fill out what you actually ended up doing... rather than
+    the model just assuming you followed its advice")."""
+    client = get_client()
+    resp = client.table(SUGGESTION_TABLE).select("issue_key, action") \
+        .eq("google_sub", google_sub).eq("gameweek", gameweek).execute()
+    return {row["issue_key"]: row["action"] for row in resp.data}
+
+
+def set_suggestion_action(google_sub: str, gameweek: int, issue_key: str, action: str) -> None:
+    """Upsert - the (google_sub, gameweek, issue_key) primary key means
+    re-marking the same issue (including "undo", which just re-marks it with
+    a fresh timestamp before a caller deletes it - see clear_suggestion_action)
+    just updates the one row rather than accumulating a history."""
+    client = get_client()
+    client.table(SUGGESTION_TABLE).upsert({
+        "google_sub": google_sub,
+        "gameweek": gameweek,
+        "issue_key": issue_key,
+        "action": action,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).execute()
+
+
+def clear_suggestion_action(google_sub: str, gameweek: int, issue_key: str) -> None:
+    """"Undo" - removes the record entirely so the suggestion goes back to
+    being shown as open, not just toggled to some third state."""
+    client = get_client()
+    client.table(SUGGESTION_TABLE).delete() \
+        .eq("google_sub", google_sub).eq("gameweek", gameweek).eq("issue_key", issue_key).execute()
